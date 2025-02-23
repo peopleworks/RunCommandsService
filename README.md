@@ -98,7 +98,7 @@ Create an `appsettings.json` file in the service directory:
 
 ```mermaid
 graph LR
-    A[Cron Expression] --> B["* * * * *"]
+    A[Cron Expression] --> B["'* * * * *'"]
     B --> C[Minute]
     B --> D[Hour]
     B --> E[Day of Month]
