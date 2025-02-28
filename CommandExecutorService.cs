@@ -58,42 +58,58 @@ namespace RunCommandsService
         {
             _logger.LogInformation("Service started");
 
-            while(!stoppingToken.IsCancellationRequested)
+            while (!stoppingToken.IsCancellationRequested)
             {
                 try
                 {
                     List<ScheduledCommand> currentCommands;
-                    lock(_lockObject)
+                    lock (_lockObject)
                     {
                         currentCommands = _commands.ToList();
                     }
 
-                    foreach(var command in currentCommands)
+                    foreach (var command in currentCommands)
                     {
-                        var cronExpression = CronExpression.Parse(command.CronExpression);
-                        var nextOccurrence = cronExpression.GetNextOccurrence(DateTime.UtcNow);
-
-                        if(nextOccurrence.HasValue &&
-                            (!command.LastExecuted.HasValue || nextOccurrence.Value > command.LastExecuted.Value))
+                        try
                         {
-                            var delay = nextOccurrence.Value - DateTime.UtcNow;
-                            if(delay > TimeSpan.Zero && delay <= TimeSpan.FromMinutes(1))
+                            var cronExpression = CronExpression.Parse(command.CronExpression);
+                            var currentTime = DateTime.UtcNow;
+                            var nextOccurrence = cronExpression.GetNextOccurrence(currentTime);
+
+                            _logger.LogInformation($"Current time (UTC): {currentTime}");
+                            _logger.LogInformation($"Next execution for command '{command.Command}' scheduled at (UTC): {nextOccurrence}");
+
+                            if (nextOccurrence.HasValue)
                             {
-                                await ExecuteCommand(command);
-                                command.LastExecuted = DateTime.UtcNow;
+                                if (!command.LastExecuted.HasValue || nextOccurrence.Value <= currentTime)
+                                {
+                                    _logger.LogInformation($"Executing command '{command.Command}' now");
+                                    await ExecuteCommand(command);
+                                    command.LastExecuted = currentTime;
+                                }
+                                else
+                                {
+                                    var timeUntilNext = nextOccurrence.Value - currentTime;
+                                    _logger.LogInformation($"Time until next execution: {timeUntilNext.TotalMinutes:F2} minutes");
+                                }
                             }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, $"Error processing command: {command.Command}");
                         }
                     }
 
+                    // Check every 30 seconds
                     await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
-                } catch(Exception ex)
+                }
+                catch (Exception ex)
                 {
                     _logger.LogError(ex, "Error in command execution loop");
                     await Task.Delay(TimeSpan.FromMinutes(1), stoppingToken);
                 }
             }
         }
-
         private async Task ExecuteCommand(ScheduledCommand command)
         {
             try
