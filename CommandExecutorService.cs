@@ -49,16 +49,36 @@ namespace RunCommandsService
             lock (_lockObject)
             {
                 _commands = _configuration.GetSection("ScheduledCommands").Get<List<ScheduledCommand>>() ?? new List<ScheduledCommand>();
+                var now = DateTime.UtcNow;
+
                 foreach (var c in _commands)
                 {
                     if (string.IsNullOrWhiteSpace(c.Id)) c.Id = c.Command;
                     if (string.IsNullOrWhiteSpace(c.TimeZone)) c.TimeZone = _schedOptions.DefaultTimeZone;
                     c.Cron = CronExpression.Parse(c.CronExpression);
-                    var now = DateTime.UtcNow;
                     _nextRunUtc[c.Id] = c.Cron.GetNextOccurrence(now, TZ(c.TimeZone));
                 }
+                PublishScheduleSnapshot();
                 _logger.LogInformation("Loaded {Count} commands from configuration", _commands.Count);
             }
+        }
+
+        private void PublishScheduleSnapshot()
+        {
+            var snapshot = _commands.Select(c => new ScheduledCommandView
+            {
+                Id = c.Id,
+                Command = c.Command,
+                CronExpression = c.CronExpression,
+                TimeZone = c.TimeZone,
+                Enabled = c.Enabled,
+                AllowParallelRuns = c.AllowParallelRuns,
+                ConcurrencyKey = c.ConcurrencyKey,
+                MaxRuntimeMinutes = c.MaxRuntimeMinutes,
+                NextRunUtc = _nextRunUtc.TryGetValue(c.Id, out var next) ? next?.ToString("o") : null,
+                CustomAlertMessage = c.CustomAlertMessage
+            });
+            _monitor.UpdateScheduleSnapshot(snapshot);
         }
 
         private static TimeZoneInfo TZ(string tz)
@@ -107,6 +127,7 @@ namespace RunCommandsService
                             _ = RunCommandAsync(cmd, stoppingToken);
                             // schedule next
                             _nextRunUtc[cmd.Id] = cmd.Cron.GetNextOccurrence(nowUtc.AddSeconds(1), TZ(cmd.TimeZone));
+                            PublishScheduleSnapshot();
                         }
                     }
 
@@ -238,6 +259,7 @@ namespace RunCommandsService
         public bool AllowParallelRuns { get; set; } = false;
         public string ConcurrencyKey { get; set; }
         public bool AlertOnFail { get; set; } = true;
+        public string CustomAlertMessage { get; set; } // NEW
 
         // runtime (not bound)
         public CronExpression Cron { get; set; }

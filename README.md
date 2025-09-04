@@ -1,5 +1,13 @@
 # Scheduled Command Executor Windows Service
 
+## ✅ What’s new (v2.1)
+
+- **Personalized email alerts** — Subject/body **templates** with tokens and per‑job `CustomAlertMessage`.
+- **Full HTML monitoring dashboard** at `/` plus `GET /api/health` JSON; now loads UI from an external `Monitoring.Dashboard.HtmlPath`.
+- **Polished UI** — dark/light theme, KPIs, search, sorting, pause auto‑refresh.
+- **More examples & use cases** for real‑world patterns (locking, rate‑limit staggering, time zones, long‑running guardrails).
+- **API payload** standardized to **camelCase** keys for friendlier front‑end consumption.
+
 
 ## ✅ What’s new (v2)
 
@@ -336,6 +344,148 @@ Use a browser or `curl http://localhost:5058/` to see recent runs, durations, ex
 { "Id": "cache-warm", "Command": "C:\\Jobs\\Warm.exe", "CronExpression": "*/10 * * * *", "ConcurrencyKey": "cache" },
 { "Id": "log-trim",   "Command": "C:\\Jobs\\Trim.exe", "CronExpression": "*/10 * * * *", "ConcurrencyKey": "logs"  }
 ```
+
+## ✉️ Personalized Email Alerts (Templates)
+
+Customize **email subject and body** with placeholders; optionally add a per‑job `CustomAlertMessage`.
+
+### Configuration
+```json
+"Monitoring": {
+  "Notifiers": {
+    "Email": {
+      "Enabled": true,
+      "SmtpHost": "smtp.example.com",
+      "SmtpPort": 587,
+      "UseSsl": true,
+      "User": "user@example.com",
+      "Password": "CHANGE_ME",
+      "From": "alerts@example.com",
+      "To": [ "ops@example.com" ],
+      "SubjectTemplate": "[${AlertType}] ${CommandId} (${ConsecutiveFailures}x) — ${DurationMs}ms",
+      "BodyTemplate": "Command: ${Command}\\nStarted: ${StartUtc:o}\\nEnded: ${EndUtc:o}\\nExitCode: ${ExitCode}\\nDuration: ${DurationMs}ms\\nError: ${Error}\\nMessage: ${CustomMessage}"
+    }
+  }
+}
+```
+
+**Supported tokens**
+
+```
+${AlertType} (Fail|Slow)
+${CommandId}  ${Command}
+${StartUtc}   ${StartUtc:o}   ${EndUtc}   ${EndUtc:o}
+${DurationMs} ${ExitCode}     ${Error}
+${ConsecutiveFailures}        ${CustomMessage}
+```
+
+**Per‑job custom message** (injects into `${CustomMessage}`):
+
+```json
+{
+  "Id": "nightly-etl",
+  "Command": "C:\\\\Jobs\\\\Etl.exe",
+  "CronExpression": "0 2 * * *",
+  "ConcurrencyKey": "db-etl",
+  "AllowParallelRuns": false,
+  "MaxRuntimeMinutes": 45,
+  "AlertOnFail": true,
+  "CustomAlertMessage": "ETL impacts dashboards by 7am; please check SSIS logs if failing."
+}
+```
+
+## 📊 HTML Monitoring Dashboard & API
+
+- `GET /` → **HTML dashboard** (auto‑refresh, KPIs, tables for jobs & recent executions, search, sort)
+- `GET /api/health` → **JSON snapshot** (camelCase; easy for UIs and monitors)
+
+### Enable & point to external HTML
+
+```json
+"Monitoring": {
+  "EnableHttpEndpoint": true,
+  "HttpPrefixes": [ "http://localhost:5058/" ],
+  "Dashboard": {
+    "Enabled": true,
+    "HtmlPath": "dashboard.html",
+    "Title": "Scheduled Command Executor",
+    "AutoRefreshSeconds": 5,
+    "ShowRawJsonToggle": true
+  }
+}
+```
+
+**Windows URL ACL (first run, Admin):**
+```powershell
+netsh http add urlacl url=http://+:5058/ user=Everyone
+```
+
+## 📚 Additional Examples & Use Cases
+
+### A) Database backup → ETL (shared resource lock)
+```json
+[
+  {
+    "Id": "db-backup",
+    "Command": "C:\\\\Jobs\\\\Backup.exe",
+    "CronExpression": "0 1 * * *",
+    "TimeZone": "Eastern Standard Time",
+    "AllowParallelRuns": false,
+    "ConcurrencyKey": "database",
+    "MaxRuntimeMinutes": 60,
+    "AlertOnFail": true
+  },
+  {
+    "Id": "nightly-etl",
+    "Command": "C:\\\\Jobs\\\\Etl.exe",
+    "CronExpression": "30 1 * * *",
+    "TimeZone": "Eastern Standard Time",
+    "AllowParallelRuns": false,
+    "ConcurrencyKey": "database",
+    "MaxRuntimeMinutes": 45,
+    "AlertOnFail": true,
+    "CustomAlertMessage": "ETL must finish by 07:00 for BI dashboards."
+  }
+]
+```
+
+### B) Staggered API jobs (avoid provider rate limits)
+```json
+[
+  { "Id": "api-sync-0", "Command": "sync.exe --shard 0", "CronExpression": "*/5 * * * *", "ConcurrencyKey": "api-sync" },
+  { "Id": "api-sync-1", "Command": "sync.exe --shard 1", "CronExpression": "2-59/5 * * * *", "ConcurrencyKey": "api-sync" },
+  { "Id": "api-sync-2", "Command": "sync.exe --shard 2", "CronExpression": "4-59/5 * * * *", "ConcurrencyKey": "api-sync" }
+]
+```
+
+### C) Region‑specific reports with time zones
+```json
+[
+  { "Id": "eu-report", "Command": "report.exe --region EU", "CronExpression": "0 7 * * *", "TimeZone": "Romance Standard Time" },
+  { "Id": "us-report", "Command": "report.exe --region US", "CronExpression": "0 7 * * *", "TimeZone": "Eastern Standard Time" }
+]
+```
+
+### D) Long‑running guardrail
+```json
+{
+  "Id": "big-reprocess",
+  "Command": "process.exe --full",
+  "CronExpression": "0 3 * * 0",
+  "MaxRuntimeMinutes": 240,
+  "AllowParallelRuns": false,
+  "ConcurrencyKey": "heavy-job",
+  "AlertOnFail": true,
+  "CustomAlertMessage": "If this fails, re-run with --resume; check disk space first."
+}
+```
+
+## 🎨 Dashboard theming & UX
+
+- Dark/light auto‑theme, gradient header, elevated cards.
+- **KPIs** (events, OK, failed, average duration), **search**, **sorting**, and **pause**.
+- Works with **camelCase** and **PascalCase** API payloads.
+- Customize via `Monitoring.Dashboard` or by editing the external `HtmlPath` file.
 
 ## Changelog
 - **v2** — Monitoring + Alerts + Safe Concurrency + Precise Scheduling
