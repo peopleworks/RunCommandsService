@@ -2,9 +2,16 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
+using System.Runtime.Versioning;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace RunCommandsService
 {
@@ -12,31 +19,57 @@ namespace RunCommandsService
     {
         private readonly IConfiguration _configuration;
         private readonly ILogger<CommandExecutorService> _logger;
+        private readonly ExecutionMonitor _monitor;
+        private readonly ConcurrencyManager _concurrency;
+        private readonly SchedulerOptions _schedOptions;
         private FileSystemWatcher _configWatcher;
-        private List<ScheduledCommand> _commands;
+        private List<ScheduledCommand> _commands = new();
         private readonly object _lockObject = new object();
+        private readonly ConcurrentDictionary<string, DateTime?> _nextRunUtc = new();
 
-        public CommandExecutorService(IConfiguration configuration, ILogger<CommandExecutorService> logger)
+        public CommandExecutorService(
+            IConfiguration configuration,
+            IOptions<SchedulerOptions> schedOptions,
+            ExecutionMonitor monitor,
+            ConcurrencyManager concurrency,
+            ILogger<CommandExecutorService> logger)
         {
             _configuration = configuration;
+            _schedOptions = schedOptions.Value;
+            _monitor = monitor;
+            _concurrency = concurrency;
             _logger = logger;
+
             LoadCommands();
             SetupConfigurationWatcher();
         }
 
         private void LoadCommands()
         {
-            lock(_lockObject)
+            lock (_lockObject)
             {
-                _commands = _configuration.GetSection("ScheduledCommands").Get<List<ScheduledCommand>>() ??
-                    new List<ScheduledCommand>();
-                _logger.LogInformation($"Loaded {_commands.Count} commands from configuration");
+                _commands = _configuration.GetSection("ScheduledCommands").Get<List<ScheduledCommand>>() ?? new List<ScheduledCommand>();
+                foreach (var c in _commands)
+                {
+                    if (string.IsNullOrWhiteSpace(c.Id)) c.Id = c.Command;
+                    if (string.IsNullOrWhiteSpace(c.TimeZone)) c.TimeZone = _schedOptions.DefaultTimeZone;
+                    c.Cron = CronExpression.Parse(c.CronExpression);
+                    var now = DateTime.UtcNow;
+                    _nextRunUtc[c.Id] = c.Cron.GetNextOccurrence(now, TZ(c.TimeZone));
+                }
+                _logger.LogInformation("Loaded {Count} commands from configuration", _commands.Count);
             }
+        }
+
+        private static TimeZoneInfo TZ(string tz)
+        {
+            try { return TimeZoneInfo.FindSystemTimeZoneById(tz); }
+            catch { return TimeZoneInfo.Utc; }
         }
 
         private void SetupConfigurationWatcher()
         {
-            string configPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory);
+            string configPath = AppDomain.CurrentDomain.BaseDirectory;
             _configWatcher = new FileSystemWatcher
             {
                 Path = configPath,
@@ -63,92 +96,126 @@ namespace RunCommandsService
                 try
                 {
                     List<ScheduledCommand> currentCommands;
-                    lock (_lockObject)
+                    lock (_lockObject) { currentCommands = _commands.ToList(); }
+
+                    var nowUtc = DateTime.UtcNow;
+                    foreach (var cmd in currentCommands.Where(c => c.Enabled))
                     {
-                        currentCommands = _commands.ToList();
-                    }
-
-                    foreach (var command in currentCommands)
-                    {
-                        try
+                        var due = _nextRunUtc.GetOrAdd(cmd.Id, _ => cmd.Cron.GetNextOccurrence(nowUtc, TZ(cmd.TimeZone)));
+                        if (due.HasValue && nowUtc >= due.Value)
                         {
-                            var cronExpression = CronExpression.Parse(command.CronExpression);
-                            var currentTime = DateTime.UtcNow;
-                            var nextOccurrence = cronExpression.GetNextOccurrence(currentTime);
-
-                            _logger.LogInformation($"Current time (UTC): {currentTime}");
-                            _logger.LogInformation($"Next execution for command '{command.Command}' scheduled at (UTC): {nextOccurrence}");
-
-                            if (nextOccurrence.HasValue)
-                            {
-                                if (!command.LastExecuted.HasValue || nextOccurrence.Value <= currentTime)
-                                {
-                                    _logger.LogInformation($"Executing command '{command.Command}' now");
-                                    await ExecuteCommand(command);
-                                    command.LastExecuted = currentTime;
-                                }
-                                else
-                                {
-                                    var timeUntilNext = nextOccurrence.Value - currentTime;
-                                    _logger.LogInformation($"Time until next execution: {timeUntilNext.TotalMinutes:F2} minutes");
-                                }
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogError(ex, $"Error processing command: {command.Command}");
+                            _ = RunCommandAsync(cmd, stoppingToken);
+                            // schedule next
+                            _nextRunUtc[cmd.Id] = cmd.Cron.GetNextOccurrence(nowUtc.AddSeconds(1), TZ(cmd.TimeZone));
                         }
                     }
 
-                    // Check every 30 seconds
-                    await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
+                    await Task.Delay(TimeSpan.FromSeconds(_schedOptions.PollSeconds), stoppingToken);
                 }
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "Error in command execution loop");
-                    await Task.Delay(TimeSpan.FromMinutes(1), stoppingToken);
+                    await Task.Delay(TimeSpan.FromSeconds(Math.Max(10, _schedOptions.PollSeconds)), stoppingToken);
                 }
             }
         }
-        private async Task ExecuteCommand(ScheduledCommand command)
+
+        private async Task RunCommandAsync(ScheduledCommand command, CancellationToken ct)
         {
+            using var acquired = await _concurrency.TryAcquireAsync(command.ConcurrencyKey ?? command.Id, command.AllowParallelRuns, ct);
+            if (acquired == null)
+            {
+                _logger.LogWarning("Skipping {Id} due to concurrency key in use ({Key})", command.Id, command.ConcurrencyKey);
+                _monitor.Record(new ExecutionEvent
+                {
+                    CommandId = command.Id,
+                    Command = command.Command,
+                    StartUtc = DateTime.UtcNow,
+                    EndUtc = DateTime.UtcNow,
+                    Success = true,
+                    SkippedDueToConflict = true
+                });
+                return;
+            }
+
+            var start = DateTime.UtcNow;
             try
             {
-                _logger.LogInformation($"Starting command execution: {command.Command}");
+                _logger.LogInformation("Executing {Id}: {Command}", command.Id, command.Command);
 
-                var processInfo = new ProcessStartInfo("cmd.exe")
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                if (command.MaxRuntimeMinutes.HasValue && command.MaxRuntimeMinutes.Value > 0)
+                {
+                    cts.CancelAfter(TimeSpan.FromMinutes(command.MaxRuntimeMinutes.Value));
+                }
+
+                var psi = new ProcessStartInfo("cmd.exe")
                 {
                     Arguments = $"/c {command.Command}",
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
                     UseShellExecute = false,
-                    CreateNoWindow = true,
+                    CreateNoWindow = true
                 };
 
+                using var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
+                process.Start();
 
-                _logger.LogDebug($"Process info configured for command: {command.Command}");
+                var readStdOut = process.StandardOutput.ReadToEndAsync();
+                var readStdErr = process.StandardError.ReadToEndAsync();
 
-                using var process = Process.Start(processInfo);
-                if(process == null)
+                await Task.WhenAny(Task.Run(() => process.WaitForExit(), cts.Token), Task.Delay(Timeout.Infinite, cts.Token))
+                          .ContinueWith(_ => Task.CompletedTask);
+
+                if (!process.HasExited)
                 {
-                    throw new InvalidOperationException("Failed to start process.");
+                    try
+                    {
+                        process.Kill(entireProcessTree: true);
+                        _logger.LogWarning("Process {Id} killed due to timeout", command.Id);
+                    }
+                    catch (Exception killEx)
+                    {
+                        _logger.LogError(killEx, "Failed to kill timed out process for {Id}", command.Id);
+                    }
                 }
 
-                string output = await process.StandardOutput.ReadToEndAsync();
-                string error = await process.StandardError.ReadToEndAsync();
+                var output = await readStdOut;
+                var error = await readStdErr;
+                var exitCode = process.HasExited ? process.ExitCode : (int?)null;
 
-                await process.WaitForExitAsync();
+                if (!string.IsNullOrWhiteSpace(output))
+                    _logger.LogInformation("Output {Id}:\n{Output}", command.Id, output);
 
-                _logger.LogInformation($"Command completed. Exit code: {process.ExitCode}");
-                _logger.LogInformation($"Command output: {output}");
+                if (!string.IsNullOrWhiteSpace(error))
+                    _logger.LogError("Errors {Id}:\n{Error}", command.Id, error);
 
-                if(!string.IsNullOrEmpty(error))
+                var success = (exitCode ?? -1) == 0 && string.IsNullOrWhiteSpace(error);
+
+                _monitor.Record(new ExecutionEvent
                 {
-                    _logger.LogError($"Command errors: {error}");
-                }
-            } catch(Exception ex)
+                    CommandId = command.Id,
+                    Command = command.Command,
+                    StartUtc = start,
+                    EndUtc = DateTime.UtcNow,
+                    ExitCode = exitCode,
+                    Success = success,
+                    Error = string.IsNullOrWhiteSpace(error) ? null : error
+                });
+            }
+            catch (Exception ex)
             {
-                _logger.LogError(ex, $"Error executing command: {command.Command}");
+                _logger.LogError(ex, "Error executing {Id}", command.Id);
+                _monitor.Record(new ExecutionEvent
+                {
+                    CommandId = command.Id,
+                    Command = command.Command,
+                    StartUtc = start,
+                    EndUtc = DateTime.UtcNow,
+                    ExitCode = null,
+                    Success = false,
+                    Error = ex.ToString()
+                });
             }
         }
 
@@ -162,11 +229,18 @@ namespace RunCommandsService
 
     public class ScheduledCommand
     {
+        public string Id { get; set; }
         public string Command { get; set; }
-
         public string CronExpression { get; set; }
+        public string TimeZone { get; set; }
+        public bool Enabled { get; set; } = true;
+        public int? MaxRuntimeMinutes { get; set; }
+        public bool AllowParallelRuns { get; set; } = false;
+        public string ConcurrencyKey { get; set; }
+        public bool AlertOnFail { get; set; } = true;
 
-        public DateTime? LastExecuted { get; set; }
+        // runtime (not bound)
+        public CronExpression Cron { get; set; }
     }
 
     public static class WindowsServiceHelpers
@@ -174,29 +248,30 @@ namespace RunCommandsService
         public class ServiceProperties
         {
             public string DisplayName { get; set; }
-
             public string Description { get; set; }
         }
 
+        [SupportedOSPlatform("windows")]
         public static void SetServiceProperties(string serviceName, ServiceProperties properties)
         {
             try
             {
-                using(var sc = new System.ServiceProcess.ServiceController(serviceName))
+                using (var sc = new System.ServiceProcess.ServiceController(serviceName))
                 {
                     var registryKey = Microsoft.Win32.Registry.LocalMachine
                         .OpenSubKey($"SYSTEM\\CurrentControlSet\\Services\\{serviceName}", true);
 
-                    if(registryKey != null)
+                    if (registryKey != null)
                     {
-                        if(!string.IsNullOrEmpty(properties.DisplayName))
+                        if (!string.IsNullOrEmpty(properties.DisplayName))
                             registryKey.SetValue("DisplayName", properties.DisplayName);
 
-                        if(!string.IsNullOrEmpty(properties.Description))
+                        if (!string.IsNullOrEmpty(properties.Description))
                             registryKey.SetValue("Description", properties.Description);
                     }
                 }
-            } catch(Exception ex)
+            }
+            catch (Exception ex)
             {
                 Console.WriteLine($"Error setting service properties: {ex.Message}");
             }

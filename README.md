@@ -1,5 +1,15 @@
 # Scheduled Command Executor Windows Service
 
+
+## ✅ What’s new (v2)
+
+- **Monitoring & Health** — lightweight HTTP health endpoint (JSON) with rolling execution history.
+- **Proactive Alerts** — Email and/or Webhook (Slack/Teams/Discord) on **consecutive failures** and **slow runs**.
+- **Safe Concurrency** — global `MaxParallelism` plus per-job `ConcurrencyKey` locks to avoid overlapping tasks on shared resources.
+- **Runtime Limits** — per-job `MaxRuntimeMinutes` auto‑kills hung processes.
+- **Precise Scheduler** — uses Cronos to compute the next exact occurrence and prevent duplicate triggers.
+- **Hot‑reload** — changes to `appsettings.json` are picked up without restarting the service.
+
 A robust Windows Service that executes scheduled commands based on cron expressions defined in a configuration file. The service supports hot-reload configuration and provides comprehensive logging capabilities.
 
 ## 🔍 Overview
@@ -234,3 +244,98 @@ Would you like me to:
 2. Include additional diagrams?
 3. Expand any particular topic?
 4. Add code examples for specific scenarios?
+
+## ⚙️ Configuration (excerpt of `appsettings.json`)
+
+```json
+{
+  "Scheduler": {
+    "PollSeconds": 5,
+    "MaxParallelism": 2,
+    "DefaultTimeZone": "America/New_York"
+  },
+  "Monitoring": {
+    "EnableHttpEndpoint": true,
+    "HttpPrefixes": [ "http://localhost:5058/" ],
+    "AlertOn": {
+      "ConsecutiveFailures": 2,
+      "ExecutionTimeMsThreshold": 60000
+    },
+    "Notifiers": {
+      "Email": {
+        "Enabled": false,
+        "SmtpHost": "smtp.example.com",
+        "SmtpPort": 587,
+        "UseSsl": true,
+        "User": "user@example.com",
+        "Password": "CHANGE_ME",
+        "From": "alerts@example.com",
+        "To": [ "ops@example.com" ]
+      },
+      "Webhook": {
+        "Enabled": false,
+        "Url": "https://hooks.example.com/your-webhook"
+      }
+    }
+  },
+  "ScheduledCommands": [
+    {
+      "Id": "notepad",
+      "Command": "notepad.exe",
+      "CronExpression": "*/5 * * * *",
+      "TimeZone": "UTC",
+      "Enabled": true,
+      "MaxRuntimeMinutes": 5,
+      "AllowParallelRuns": false,
+      "ConcurrencyKey": "ui-apps",
+      "AlertOnFail": true
+    }
+  ]
+}
+```
+
+## 📡 Health endpoint
+
+If enabled, the service exposes a JSON health snapshot at the prefixes in `Monitoring.HttpPrefixes` (default: `http://localhost:5058/`).
+
+**First time on Windows**, grant URL ACL (elevated PowerShell/cmd):
+
+```powershell
+netsh http add urlacl url=http://+:5058/ user=Everyone
+```
+
+Use a browser or `curl http://localhost:5058/` to see recent runs, durations, exit codes, and consecutive failures.
+
+## 🛡️ Operational guidance
+
+- Group mutually‑exclusive jobs by the same `ConcurrencyKey` (e.g., `"db-backups"`, `"reports"`), and set `AllowParallelRuns=false`.
+- Start with `MaxParallelism = 1`; increase gradually while watching durations in the health endpoint.
+- Set `MaxRuntimeMinutes` to auto‑recover from stuck processes.
+- Configure both **Webhook** (chat/ops) and **Email** (audit) notifiers for redundancy.
+
+## 🧪 Examples
+
+**Run a PowerShell script every hour, only one at a time, kill after 20 minutes:**
+
+```json
+{
+  "Id": "hourly-report",
+  "Command": "powershell.exe -ExecutionPolicy Bypass -File C:\\Jobs\\HourlyReport.ps1",
+  "CronExpression": "0 * * * *",
+  "TimeZone": "America/New_York",
+  "AllowParallelRuns": false,
+  "ConcurrencyKey": "reports",
+  "MaxRuntimeMinutes": 20,
+  "AlertOnFail": true
+}
+```
+
+**Two independent maintenance tasks concurrently, different keys:**
+
+```json
+{ "Id": "cache-warm", "Command": "C:\\Jobs\\Warm.exe", "CronExpression": "*/10 * * * *", "ConcurrencyKey": "cache" },
+{ "Id": "log-trim",   "Command": "C:\\Jobs\\Trim.exe", "CronExpression": "*/10 * * * *", "ConcurrencyKey": "logs"  }
+```
+
+## Changelog
+- **v2** — Monitoring + Alerts + Safe Concurrency + Precise Scheduling
