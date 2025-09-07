@@ -203,11 +203,33 @@ stateDiagram-v2
 
 1. **Project Structure**
 ```
-├── Program.cs                 # Main service entry point
-├── CommandExecutorService.cs  # Core service implementation
-├── FileLogger.cs             # Logging implementation
-├── appsettings.json          # Configuration file
-└── Logs/                     # Log directory
+RunCommandsService/
+├─ Program.cs # Host setup (Windows Service, DI, logging)
+├─ CommandExecutorService.cs # Scheduler/executor core (cron, concurrency, run/timeout)
+├─ Monitoring.cs # HTTP dashboard (/ + /api/health + /api/logs + Job Builder APIs)
+├─ ConcurrencyManager.cs # Keyed lock to prevent overlapping runs
+├─ SchedulerOptions.cs # Scheduler configuration (PollSeconds, DefaultTimeZone, etc.)
+├─ FileLogger.cs # Rolling file logger (daily log_*.txt in base/ or Logs/)
+├─ WebhookNotifier.cs # (Optional) webhook alert notifier (implements IAlertNotifier)
+├─ HealthHttpServerService.cs # Back-compat no-op hosted service
+├─ dashboard.html # Standalone UI (cards, tables, logs tail, Job Builder modal)
+├─ favicon.ico # Dashboard icon
+├─ appsettings.json # Configuration (Monitoring, Notifiers, ScheduledCommands)
+├─ README.md # Documentation
+└─ Logs/ # (runtime) log directory; API tails newest file in base/logs/Log/
+
+
+### Key files
+- **Monitoring.cs** – serves the dashboard and exposes Job Builder endpoints  
+  `GET /api/health`, `GET /api/logs?tailKb=128`, `GET/POST/PUT/DELETE /api/jobs`, `POST /api/jobs/validateCron`
+- **CommandExecutorService.cs** – cron scheduling, concurrency, max runtime, graceful shutdown
+- **appsettings.json** – includes `ScheduledCommands` and `Monitoring` (`AdminKey` for Job Builder writes)
+- **dashboard.html** – UI with KPIs, tables, logs tail, “+ New job” wizard (cron preview)
+
+> Notes:  
+> • The service also tails daily `log_YYYY-MM-DD.txt` in the base folder and will read from `log/` or `Logs/` if present.  
+> • Set `Monitoring:Dashboard:HtmlPath` if you move the HTML.
+
 ```
 
 2. **Adding New Features**
