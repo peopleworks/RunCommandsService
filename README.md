@@ -201,7 +201,8 @@ stateDiagram-v2
 
 ## 🛠️ Development
 
-1. **Project Structure**
+### 🧱 Project Structure
+
 ```
 RunCommandsService/
 ├─ Program.cs # Host setup (Windows Service, DI, logging)
@@ -231,11 +232,6 @@ RunCommandsService/
 > • Set `Monitoring:Dashboard:HtmlPath` if you move the HTML.
 
 ```
-
-2. **Adding New Features**
-- Implement new functionality in `CommandExecutorService.cs`
-- Update configuration schema in `appsettings.json`
-- Add appropriate logging statements
 
 ## 🤝 Contributing
 
