@@ -1,5 +1,46 @@
 # Scheduled Command Executor Windows Service
 
+## ✨ What’s new (v2.4)
+
+- **Job Builder in the dashboard** – create jobs from the UI, with cron builder and **live next-run preview**.
+- **Write APIs** – `/api/jobs` (create/update/delete) and `/api/jobs/validateCron` (preview next occurrences).
+- **Admin key** – protect write endpoints with `X-Admin-Key` (see config below).
+- **Graceful shutdown** – the scheduler treats service shutdown as normal (no error logs), and kills child processes politely.
+- **Docs** – expanded `appsettings.json` reference with all per-job flags (`CaptureOutput`, `QuietStartLog`, `AllowParallelRuns`, `ConcurrencyKey`, `MaxRuntimeMinutes`, `CustomAlertMessage`, `TimeZone`) and monitoring options.
+
+## 🚀 What’s new (v2.3)
+
+- **Dashboard UX upgrade** — wide mode toggle, sticky table headers, and both vertical & horizontal scroll for big lists.
+- **KPI cards** restored and styled (Events, OK, Failed, Avg Duration).
+- **Live Service Logs** panel with tail sizes, follow, and copy to clipboard (backs `/api/logs`).
+- **More robust scheduling** — next occurrence is computed from the *due* instant, reducing missed ticks under load.
+- **Reliable process handling** — clean timeout/kill with `WaitForExitAsync`.
+- **Docs** — added recipes for **silent jobs** and **detached “fire‑and‑forget”** execution.
+
+## 🔔 What’s new (v2.2)
+
+- **Silent jobs**: per-task flags `CaptureOutput` and `QuietStartLog` let you run jobs without streaming their stdout/stderr into the service logs.
+- **No behavior change by default**: both flags default to `CaptureOutput: true`, `QuietStartLog: false` to preserve existing behavior.
+- **Observability intact**: we still track start/end time, duration, **exit code**, alerts, and show results on the dashboard.
+- **Docs & examples**: added a dedicated “Silent jobs” section with ready-to-copy JSON.
+
+### Quick example
+```json
+{
+  "Id": "SistemaAutomatizadoDashboard",
+  "Command": "cmd /c \"pushd C:\\\\Apps\\\\SistemaAutomatizadoDashboard && \\\"%ProgramFiles%\\\\nodejs\\\\node.exe\\\" src\\\\main.js process\"",
+  "CronExpression": "40 23 * * 1-5",
+  "TimeZone": "Eastern Standard Time",
+  "Enabled": true,
+  "AllowParallelRuns": false,
+  "ConcurrencyKey": "dashboard",
+  "MaxRuntimeMinutes": 60,
+  "AlertOnFail": true,
+  "CaptureOutput": false,
+  "QuietStartLog": true,
+  "CustomAlertMessage": "SistemaAutomatizadoDashboard failed on server; check the app’s own logs for details."
+}
+```
 ## ✅ What’s new (v2.1)
 
 - **Personalized email alerts** — Subject/body **templates** with tokens and per‑job `CustomAlertMessage`.
@@ -7,8 +48,7 @@
 - **Polished UI** — dark/light theme, KPIs, search, sorting, pause auto‑refresh.
 - **More examples & use cases** for real‑world patterns (locking, rate‑limit staggering, time zones, long‑running guardrails).
 - **API payload** standardized to **camelCase** keys for friendlier front‑end consumption.
-
-
+- 
 ## ✅ What’s new (v2)
 
 - **Monitoring & Health** — lightweight HTTP health endpoint (JSON) with rolling execution history.
@@ -345,147 +385,194 @@ Use a browser or `curl http://localhost:5058/` to see recent runs, durations, ex
 { "Id": "log-trim",   "Command": "C:\\Jobs\\Trim.exe", "CronExpression": "*/10 * * * *", "ConcurrencyKey": "logs"  }
 ```
 
-## ✉️ Personalized Email Alerts (Templates)
+## 📊 Dashboard: wide mode, scroll & live logs
 
-Customize **email subject and body** with placeholders; optionally add a per‑job `CustomAlertMessage`.
+The HTML dashboard now makes better use of screen real estate and scales to large histories.
 
-### Configuration
-```json
-"Monitoring": {
-  "Notifiers": {
-    "Email": {
-      "Enabled": true,
-      "SmtpHost": "smtp.example.com",
-      "SmtpPort": 587,
-      "UseSsl": true,
-      "User": "user@example.com",
-      "Password": "CHANGE_ME",
-      "From": "alerts@example.com",
-      "To": [ "ops@example.com" ],
-      "SubjectTemplate": "[${AlertType}] ${CommandId} (${ConsecutiveFailures}x) — ${DurationMs}ms",
-      "BodyTemplate": "Command: ${Command}\\nStarted: ${StartUtc:o}\\nEnded: ${EndUtc:o}\\nExitCode: ${ExitCode}\\nDuration: ${DurationMs}ms\\nError: ${Error}\\nMessage: ${CustomMessage}"
-    }
-  }
-}
-```
+- **Wide mode** toggle to expand content to ~96% viewport width.
+- **Sticky headers** with **vertical & horizontal scroll** for both *Scheduled Jobs* and *Recent Executions* tables.
+- **KPI cards**: Events, OK, Failed, Avg Duration — fed from `/api/health`.
+- **Service Logs (tail)** card shows the tail of the latest log file and auto-refreshes.
 
-**Supported tokens**
+### Logs API
+The dashboard calls a new endpoint to read the tail of the service logs:
 
-```
-${AlertType} (Fail|Slow)
-${CommandId}  ${Command}
-${StartUtc}   ${StartUtc:o}   ${EndUtc}   ${EndUtc:o}
-${DurationMs} ${ExitCode}     ${Error}
-${ConsecutiveFailures}        ${CustomMessage}
-```
+- `GET /api/logs?tailKb=128` → returns the last `tailKb` KB of the newest log file.
+- Searches common locations: app base folder, `/log`, `/logs` (e.g., `log_*.txt` or any `*.txt` inside those dirs).
+- Response content type: `text/plain; charset=utf-8`.
 
-**Per‑job custom message** (injects into `${CustomMessage}`):
+> Tip: use **Follow** to auto-scroll as new log lines appear, and **Copy** to put the visible tail into the clipboard.
+
+## 🏃 Detached jobs (fire‑and‑forget)
+
+If a command should *launch and keep running* (daemon-style), you can start it without blocking the scheduler:
 
 ```json
 {
-  "Id": "nightly-etl",
-  "Command": "C:\\\\Jobs\\\\Etl.exe",
-  "CronExpression": "0 2 * * *",
-  "ConcurrencyKey": "db-etl",
+  "Id": "SistemaAutomatizadoDashboard",
+  "Command": "cmd /c \"pushd C:\\\\Apps\\\\SistemaAutomatizadoDashboard && start \\\"\\\" /b \\\"%ProgramFiles%\\\\nodejs\\\\node.exe\\\" src\\\\main.js process\"",
+  "CronExpression": "40 23 * * 1-5",
+  "TimeZone": "Eastern Standard Time",
+  "Enabled": true,
   "AllowParallelRuns": false,
-  "MaxRuntimeMinutes": 45,
+  "ConcurrencyKey": "dashboard",
+  "MaxRuntimeMinutes": 5,
   "AlertOnFail": true,
-  "CustomAlertMessage": "ETL impacts dashboards by 7am; please check SSIS logs if failing."
+  "CaptureOutput": false,
+  "QuietStartLog": true,
+  "CustomAlertMessage": "Dashboard pipeline kicked off; refer to the app’s own logs for runtime details."
 }
 ```
 
-## 📊 HTML Monitoring Dashboard & API
+Why:
 
-- `GET /` → **HTML dashboard** (auto‑refresh, KPIs, tables for jobs & recent executions, search, sort)
-- `GET /api/health` → **JSON snapshot** (camelCase; easy for UIs and monitors)
+- `start "" /b …` spawns the process and returns immediately — no scheduler blocking.
+- Keep `CaptureOutput: false` (your app handles logging) and a small `MaxRuntimeMinutes` (detached runs don’t need it).
+- If overlap is risky, implement a lock/guard inside your app (PID/lock file or mutual exclusion in your code).
 
-### Enable & point to external HTML
+## 🔧 Job Builder (Dashboard)
 
+From the dashboard, click **“+ New job”** to open the wizard. You can:
+- set **Id**, **Command**, **TimeZone**, **ConcurrencyKey**, **AllowParallelRuns**, **MaxRuntimeMinutes**, `CaptureOutput`, `QuietStartLog`, `AlertOnFail`, and **CustomAlertMessage**.
+- enter a **Cron expression** and click **Preview** to see the **next 5 UTC** runs (server-side validate).
+- save the job (atomic write to `appsettings.json`), and the service auto-reloads the schedule.
+
+### Security
+Write endpoints require a header **`X-Admin-Key`**. Set it in your config:
 ```json
-"Monitoring": {
-  "EnableHttpEndpoint": true,
-  "HttpPrefixes": [ "http://localhost:5058/" ],
-  "Dashboard": {
-    "Enabled": true,
-    "HtmlPath": "dashboard.html",
-    "Title": "Scheduled Command Executor",
-    "AutoRefreshSeconds": 5,
-    "ShowRawJsonToggle": true
+{
+  "Monitoring": {
+    "AdminKey": "put-a-strong-random-key-here"
   }
 }
 ```
 
-**Windows URL ACL (first run, Admin):**
-```powershell
-netsh http add urlacl url=http://+:5058/ user=Everyone
+### APIs
+- `GET  /api/jobs` – list current jobs (raw from config)
+- `POST /api/jobs/validateCron` – body: `{ "cron": "*/5 * * * *", "timeZone": "Eastern Standard Time" }`
+- `POST /api/jobs` – create job (body is the job JSON)
+- `PUT  /api/jobs/{id}` – update by id
+- `DELETE /api/jobs/{id}` – delete by id
+
+All write calls must include the header: `X-Admin-Key: <your-key>`.
+
+### Example job JSON (Node task, Mon–Fri 23:40 EST)
+```json
+{
+  "Id": "SistemaAutomatizadoDashboard",
+  "Command": "cmd /c \"pushd C:\\\\Apps\\\\SistemaAutomatizadoDashboard && \\\"%ProgramFiles%\\\\nodejs\\\\node.exe\\\" src\\\\main.js process\"",
+  "CronExpression": "40 23 * * 1-5",
+  "TimeZone": "Eastern Standard Time",
+  "Enabled": true,
+  "AllowParallelRuns": false,
+  "ConcurrencyKey": "dashboard",
+  "MaxRuntimeMinutes": 5,
+  "AlertOnFail": true,
+  "CaptureOutput": false,
+  "QuietStartLog": true,
+  "CustomAlertMessage": "Dashboard pipeline kicked off; refer to the app’s own logs for runtime details."
+}
 ```
 
-## 📚 Additional Examples & Use Cases
+## 🛑 Graceful shutdown & cancellation
 
-### A) Database backup → ETL (shared resource lock)
+When the Windows Service stops (or the host restarts), the scheduler loop and any in-flight `RunCommandAsync` now treat
+**`OperationCanceledException` / `TaskCanceledException` as normal**. We avoid false “error” logs and ensure child
+processes are **killed cleanly** on timeout **or** shutdown.
+
+## ⚙️ `appsettings.json` reference (v2.4)
+
+### Top-level
 ```json
-[
-  {
-    "Id": "db-backup",
-    "Command": "C:\\\\Jobs\\\\Backup.exe",
-    "CronExpression": "0 1 * * *",
-    "TimeZone": "Eastern Standard Time",
-    "AllowParallelRuns": false,
-    "ConcurrencyKey": "database",
-    "MaxRuntimeMinutes": 60,
-    "AlertOnFail": true
+{
+  "Scheduler": {
+    "PollSeconds": 5,
+    "DefaultTimeZone": "UTC",
+    "MaxParallelism": 1
   },
-  {
-    "Id": "nightly-etl",
-    "Command": "C:\\\\Jobs\\\\Etl.exe",
-    "CronExpression": "30 1 * * *",
-    "TimeZone": "Eastern Standard Time",
-    "AllowParallelRuns": false,
-    "ConcurrencyKey": "database",
-    "MaxRuntimeMinutes": 45,
-    "AlertOnFail": true,
-    "CustomAlertMessage": "ETL must finish by 07:00 for BI dashboards."
-  }
-]
-```
+  "Monitoring": {
+    "EnableHttpEndpoint": true,
+    "HttpPrefixes": [ "http://localhost:5058/" ],
+    "AdminKey": null,
+    "Dashboard": {
+      "Enabled": true,
+      "Title": "Scheduled Command Executor",
+      "AutoRefreshSeconds": 5,
+      "ShowRawJsonToggle": true,
+      "HtmlPath": "dashboard.html"
+    },
+    "AlertOn": {
+      "ConsecutiveFailures": 2,
+      "SlowRunMs": 120000,
+      "EmailOnFail": true,
+      "EmailOnConsecutiveFailures": true
+    },
+    "Notifiers": {
+      "Email": {
+        "Enabled": false,
+        "From": "",
+        "To": [ "ops@contoso.com" ],
+        "SmtpHost": "",
+        "SmtpPort": 587,
+        "UseSsl": true,
+        "User": "",
+        "Password": "",
+        "SubjectTemplate": "[${AlertType}] ${CommandId} (${ConsecutiveFailures}x) — ${DurationMs}ms",
+        "BodyTemplate": "Command: ${Command}\nStarted: ${StartUtc:o}\nEnded: ${EndUtc:o}\nExitCode: ${ExitCode}\nDuration: ${DurationMs}ms\nError: ${Error}\nMessage: ${CustomMessage}"
+      }
+      /* Optional: webhook example (if you wired WebhookNotifier)
+      ,"Webhook": {
+        "Enabled": true,
+        "Url": "https://example/webhook",
+        "AuthorizationHeader": "Bearer <token>"
+      }*/
+    }
+  },
 
-### B) Staggered API jobs (avoid provider rate limits)
-```json
-[
-  { "Id": "api-sync-0", "Command": "sync.exe --shard 0", "CronExpression": "*/5 * * * *", "ConcurrencyKey": "api-sync" },
-  { "Id": "api-sync-1", "Command": "sync.exe --shard 1", "CronExpression": "2-59/5 * * * *", "ConcurrencyKey": "api-sync" },
-  { "Id": "api-sync-2", "Command": "sync.exe --shard 2", "CronExpression": "4-59/5 * * * *", "ConcurrencyKey": "api-sync" }
-]
-```
-
-### C) Region‑specific reports with time zones
-```json
-[
-  { "Id": "eu-report", "Command": "report.exe --region EU", "CronExpression": "0 7 * * *", "TimeZone": "Romance Standard Time" },
-  { "Id": "us-report", "Command": "report.exe --region US", "CronExpression": "0 7 * * *", "TimeZone": "Eastern Standard Time" }
-]
-```
-
-### D) Long‑running guardrail
-```json
-{
-  "Id": "big-reprocess",
-  "Command": "process.exe --full",
-  "CronExpression": "0 3 * * 0",
-  "MaxRuntimeMinutes": 240,
-  "AllowParallelRuns": false,
-  "ConcurrencyKey": "heavy-job",
-  "AlertOnFail": true,
-  "CustomAlertMessage": "If this fails, re-run with --resume; check disk space first."
+  "ScheduledCommands": [
+    {
+      "Id": "example",
+      "Command": "cmd /c echo Hello",
+      "CronExpression": "*/5 * * * *",
+      "TimeZone": "UTC",
+      "Enabled": true,
+      "AllowParallelRuns": false,
+      "ConcurrencyKey": "example",
+      "MaxRuntimeMinutes": 10,
+      "AlertOnFail": true,
+      "CaptureOutput": true,
+      "QuietStartLog": false,
+      "CustomAlertMessage": "Friendly context in alerts"
+    }
+  ]
 }
 ```
 
-## 🎨 Dashboard theming & UX
+### Per-job options
+- **Id** *(string, required)* – unique id.
+- **Command** *(string, required)* – full shell command; Windows examples often use `cmd /c "..."` with quoting.
+- **CronExpression** *(string, required)* – 5-field cron (min hour dom mon dow).
+- **TimeZone** *(string)* – Windows tz id (e.g., `Eastern Standard Time`). Falls back to `Scheduler.DefaultTimeZone`.
+- **Enabled** *(bool)* – include/exclude from scheduling.
+- **AllowParallelRuns** *(bool)* – if `false`, jobs sharing the same **ConcurrencyKey** won’t overlap.
+- **ConcurrencyKey** *(string)* – grouping key for mutual exclusion. If empty, `Id` is used.
+- **MaxRuntimeMinutes** *(int?)* – cancels and kills the process after this duration.
+- **AlertOnFail** *(bool)* – send alerts on failures (ties into Monitoring.Notifiers).
+- **CaptureOutput** *(bool)* – if `true`, stdout/stderr are captured and logged; stderr content marks the run failed.
+- **QuietStartLog** *(bool)* – suppresses the “Executing …” info log at start, useful for very frequent jobs.
+- **CustomAlertMessage** *(string)* – extra context included in email/webhook templates.
 
-- Dark/light auto‑theme, gradient header, elevated cards.
-- **KPIs** (events, OK, failed, average duration), **search**, **sorting**, and **pause**.
-- Works with **camelCase** and **PascalCase** API payloads.
-- Customize via `Monitoring.Dashboard` or by editing the external `HtmlPath` file.
+### Monitoring endpoint & dashboard
+- `Monitoring.HttpPrefixes` – list of prefixes for the built-in HTTP server (ex: `http://localhost:5058/`).
+- `GET /api/health` – dashboard data (scheduled snapshot + recent executions).
+- `GET /api/logs?tailKb=128` – returns the last *tailKb* KB of the newest log file (looks in base, `log/`, `logs/`).
+
+### Job Builder write APIs (require `Monitoring.AdminKey`)
+- `GET  /api/jobs`
+- `POST /api/jobs/validateCron`
+- `POST /api/jobs`
+- `PUT  /api/jobs/{id}`
+- `DELETE /api/jobs/{id}`
 
 ## Changelog
 - **v2** — Monitoring + Alerts + Safe Concurrency + Precise Scheduling
