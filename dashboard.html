@@ -352,7 +352,7 @@
                                     <th>Key</th>
                                     <th>Parallel</th>
                                     <th>Max (min)</th>
-                                    <th>Next run (UTC)</th>
+                                    <th>Next run</th>
                                     <th>Enabled</th>
                                 </tr>
                             </thead>
@@ -498,19 +498,23 @@ async function load(){
     document.getElementById('k_fail').textContent = fail; document.getElementById('k_avg').textContent = avg?fmtMs(avg):'—';
 
     const q = document.getElementById('search').value.toLowerCase();
-    const jb = document.querySelector('#tblJobs tbody'); jb.innerHTML='';
+    const jb = document.querySelector('#tblJobs tbody'); jb.innerHTML = '';
+
     jobs.filter(j => !q || (p(j,'id','Id')||'').toLowerCase().includes(q) ||
                            (p(j,'concurrencyKey','ConcurrencyKey')||'').toLowerCase().includes(q) ||
                            (p(j,'cronExpression','CronExpression')||'').toLowerCase().includes(q))
         .forEach(j => {
-          const tr=document.createElement('tr');
+            const tr = document.createElement('tr');
+            const nextLocal = p(j, 'nextRunLocal', 'NextRunLocal');
+            const nextUtc = p(j, 'nextRunUtc', 'NextRunUtc');
+
           tr.innerHTML = `<td class="mono">${p(j,'id','Id')}</td>
             <td class="mono">${p(j,'cronExpression','CronExpression')}</td>
             <td>${p(j,'timeZone','TimeZone')}</td>
             <td class="mono">${p(j,'concurrencyKey','ConcurrencyKey')||''}</td>
             <td>${p(j,'allowParallelRuns','AllowParallelRuns')?'Yes':'No'}</td>
             <td>${p(j,'maxRuntimeMinutes','MaxRuntimeMinutes')??''}</td>
-            <td class="mono">${p(j,'nextRunUtc','NextRunUtc')||''}</td>
+            <td class="mono">${nextLocal || nextUtc || ''}</td>
             <td>${p(j,'enabled','Enabled')?'<span class="chip">ON</span>':'<span class="chip">OFF</span>'}</td>`;
           jb.appendChild(tr);
         });
