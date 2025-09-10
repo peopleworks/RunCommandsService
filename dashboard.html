@@ -17,7 +17,7 @@
             --chip: #111827;
             --brand1: #7c3aed;
             --brand2: #06b6d4;
-            --shadow: 0 8px 30px rgba(2,6,23,.35);
+            --shadow: 0 8px 30px rgba(2,6,23,.35)
         }
 
         @media (prefers-color-scheme: light) {
@@ -28,7 +28,7 @@
                 --fg: #0f172a;
                 --line: #e5e7eb;
                 --chip: #eef2ff;
-                --shadow: 0 8px 24px rgba(15,23,42,.08);
+                --shadow: 0 8px 24px rgba(15,23,42,.08)
             }
         }
 
@@ -37,14 +37,15 @@
         }
 
         html, body {
-            height: 100%
+            height: 100%;
+            overflow-x: hidden
         }
-
+        /* ✅ no page-level horizontal scroll */
         body {
-            font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial;
+            font-family: ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial;
             margin: 0;
-            background: radial-gradient(1200px 800px at 10% -10%, var(--brand1) 0%, transparent 40%), radial-gradient(1000px 600px at 120% 0%, transparent 35%), var(--bg);
-            color: var(--fg);
+            background: radial-gradient(1200px 800px at 10% -10%,var(--brand1) 0%,transparent 40%), radial-gradient(1000px 600px at 120% 0%,transparent 35%),var(--bg);
+            color: var(--fg)
         }
 
         header {
@@ -52,9 +53,9 @@
             top: 0;
             z-index: 5;
             padding: 18px 16px;
-            background: linear-gradient(0deg, rgba(2,6,23,.6), rgba(2,6,23,.6));
+            background: linear-gradient(0deg,rgba(2,6,23,.6),rgba(2,6,23,.6));
             backdrop-filter: saturate(180%) blur(8px);
-            border-bottom: 1px solid rgba(255,255,255,.06);
+            border-bottom: 1px solid rgba(255,255,255,.06)
         }
 
         .title {
@@ -71,11 +72,10 @@
 
         .wrap {
             padding: 18px 16px;
-            width: 100%;
-            max-width: 100vw;
-            margin: 0;
+            max-width: 1200px;
+            margin: 0 auto
         }
-
+        /* centered & constrained */
         .toolbar {
             display: flex;
             gap: 12px;
@@ -110,7 +110,7 @@
 
         .kpi {
             display: grid;
-            grid-template-columns: repeat(4,minmax(220px,1fr));
+            grid-template-columns: repeat(4,minmax(180px,1fr));
             gap: 12px;
             margin: 0 0 16px
         }
@@ -161,16 +161,17 @@
 
         .table-wrap {
             overflow: auto;
-            max-height: 45vh
+            max-height: 45vh;
+            max-width: 100%
         }
-
+        /* scroll stays inside table */
         table {
             width: 100%;
             border-collapse: collapse;
             font-size: 13px;
-            white-space: nowrap
+            table-layout: fixed
         }
-
+        /* ✅ fixed layout */
         thead th {
             position: sticky;
             top: 0;
@@ -192,8 +193,15 @@
             background: rgba(255,255,255,.03)
         }
 
+        th, td {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 1px
+        }
+        /* ✅ ellipsis cells */
         .mono {
-            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace
+            font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,monospace
         }
 
         .chip {
@@ -229,14 +237,21 @@
             overflow: auto;
             max-height: 40vh;
             background: var(--card);
-            border: 1px solid var(--line)
+            border: 1px solid var(--line);
+            max-width: 100%
         }
 
         .logbox {
-            white-space: pre;
+            white-space: pre-wrap;
+            word-break: break-word;
             font-size: 12px
         }
-
+        /* ✅ wrap long log lines */
+        #json {
+            white-space: pre-wrap;
+            word-break: break-word
+        }
+        /* ✅ wrap raw json lines  */
         /* Modal */
         .modal {
             position: fixed;
@@ -312,25 +327,36 @@
                 border: 1px solid var(--line);
                 color: var(--fg)
             }
+
+        #errorBox {
+            display: none;
+            margin: 8px 0 0;
+            padding: 10px 12px;
+            border-radius: 10px;
+            border: 1px solid #5c1c1c;
+            background: #2a0f0f;
+            color: #ffd4d4
+        }
     </style>
 </head>
 <body>
     <header class="wrap">
-        <h1 class="title">{{TITLE}}</h1>
+        <h1 class="title">{{TITLE}} <span id="appVer" class="chip" style="margin-left:.5rem;"></span></h1>
         <div class="subtitle">Beautiful, fast, and shareable monitoring for scheduled jobs.</div>
     </header>
 
     <div class="wrap">
         <div class="toolbar">
             <span class="pill">Auto-refresh: every <strong class="mono" id="autoSz">{{AUTO_REFRESH_SECONDS}}s</strong></span>
-            {{RAW_TOGGLE}}
             <label class="pill"><input id="pause" type="checkbox"> Pause</label>
             <input id="search" type="text" placeholder="Filter jobs by id / key / cron…" />
             <button id="btnNew" class="pill">+ New job</button>
+            <button id="btnRaw" class="pill">Raw JSON</button>
             <span id="status" class="muted"></span>
         </div>
 
-        <!-- KPI cards -->
+        <div id="errorBox"></div>
+
         <div class="kpi" id="kpis">
             <div class="item"><div class="muted">Events</div><div class="v" id="k_total">0</div></div>
             <div class="item"><div class="muted">OK</div><div class="v ok" id="k_ok">0</div></div>
@@ -344,6 +370,16 @@
                 <div class="body">
                     <div class="table-wrap">
                         <table id="tblJobs">
+                            <colgroup>
+                                <col style="width:20%">
+                                <col style="width:14%">
+                                <col style="width:16%">
+                                <col style="width:12%">
+                                <col style="width:8%">
+                                <col style="width:10%">
+                                <col style="width:16%">
+                                <col style="width:8%">
+                            </colgroup>
                             <thead>
                                 <tr>
                                     <th>Id</th>
@@ -367,15 +403,16 @@
                 <div class="body">
                     <div class="table-wrap">
                         <table id="tblExec">
+                            <colgroup>
+                                <col style="width:28%">
+                                <col style="width:22%">
+                                <col style="width:8%">
+                                <col style="width:12%">
+                                <col style="width:12%">
+                                <col style="width:18%">
+                            </colgroup>
                             <thead>
-                                <tr>
-                                    <th>When (UTC)</th>
-                                    <th>Id</th>
-                                    <th>Exit</th>
-                                    <th>Duration</th>
-                                    <th>Status</th>
-                                    <th>Error</th>
-                                </tr>
+                                <tr><th>When (UTC)</th><th>Id</th><th>Exit</th><th>Duration</th><th>Status</th><th>Error</th></tr>
                             </thead>
                             <tbody></tbody>
                         </table>
@@ -412,28 +449,14 @@
         <div class="sheet">
             <h3>Create job</h3>
             <div class="grid2">
-                <div class="field">
-                    <label>Id</label>
-                    <input id="j_id" placeholder="unique-id">
-                </div>
-                <div class="field">
-                    <label>Time zone</label>
-                    <input id="j_tz" placeholder="Eastern Standard Time">
-                </div>
+                <div class="field"><label>Id</label><input id="j_id" placeholder="unique-id"></div>
+                <div class="field"><label>Time zone</label><input id="j_tz" placeholder="Eastern Standard Time"></div>
                 <div class="field" style="grid-column:1 / -1">
                     <label>Command</label>
                     <textarea id="j_cmd" rows="3" class="mono" placeholder='cmd /c "pushd C:\\Apps\\MyJob && \"C:\\Program Files\\nodejs\\node.exe\" app.js"'></textarea>
                 </div>
-
-                <div class="field">
-                    <label>Concurrency key (optional)</label>
-                    <input id="j_key" placeholder="my-key">
-                </div>
-                <div class="field">
-                    <label>Max runtime (minutes)</label>
-                    <input id="j_mrm" type="number" placeholder="60">
-                </div>
-
+                <div class="field"><label>Concurrency key (optional)</label><input id="j_key" placeholder="my-key"></div>
+                <div class="field"><label>Max runtime (minutes)</label><input id="j_mrm" type="number" placeholder="60"></div>
                 <div class="field">
                     <label><input type="checkbox" id="j_parallel"> Allow parallel runs</label>
                     <label><input type="checkbox" id="j_cap" checked> CaptureOutput</label>
@@ -442,19 +465,17 @@
                     <label><input type="checkbox" id="j_quiet"> QuietStartLog</label>
                     <label><input type="checkbox" id="j_alert" checked> AlertOnFail</label>
                 </div>
-
                 <div class="field" style="grid-column:1 / -1">
                     <label>Custom alert message</label>
                     <input id="j_msg" placeholder="Human hint to include in alert emails">
                 </div>
-
                 <div class="field" style="grid-column:1 / -1">
                     <label>Cron expression</label>
                     <div class="grid1">
                         <input id="cronTxt" class="mono" placeholder="*/5 * * * *">
                         <div class="actions" style="justify-content:flex-start">
                             <button id="cronPrevBtn" class="btn secondary">Preview next 5</button>
-                            <div id="cronNext" class="mono" style="margin-left:10px; white-space:pre-wrap"></div>
+                            <div id="cronNext" class="mono" style="margin-left:10px;white-space:pre-wrap"></div>
                         </div>
                     </div>
                 </div>
@@ -467,136 +488,171 @@
     </div>
 
     <script>
-const autoSeconds = parseInt('{{AUTO_REFRESH_SECONDS}}', 10) || 5;
-let timer=null, logTimer=null;
+    // ========= API helpers =========
+    const API_BASE = (window.location.origin && window.location.origin.startsWith('http'))
+      ? window.location.origin
+      : 'http://localhost:5058';
 
-function fmtMs(ms){ if(ms==null) return '—'; if(ms<1000) return ms+' ms';
-  const s=ms/1000; if(s<60) return s.toFixed(1)+' s'; const m=Math.floor(s/60), r=Math.round(s%60); return m+'m '+r+'s'; }
-function p(o, lc, pc){ return o && (o[lc]!==undefined ? o[lc] : o[pc]); }
+    async function getJson(path){ const r=await fetch(API_BASE+path,{cache:'no-store'}); if(!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); }
+    async function getText(path){ const r=await fetch(API_BASE+path,{cache:'no-store'}); if(!r.ok) throw new Error(`HTTP ${r.status}`); return r.text(); }
+    async function postJson(path, body, headers={}) {
+      const res = await fetch(API_BASE+path, { method:'POST', headers:{'Content-Type':'application/json',...headers}, body:JSON.stringify(body) });
+      const ct = res.headers.get('content-type') || '';
+      const data = ct.includes('application/json') ? await res.json() : await res.text();
+      if (!res.ok) throw new Error((data && data.error) || (typeof data==='string'?data:`HTTP ${res.status}`));
+      return data;
+    }
 
-function startTimer(){ stopTimer();
-  timer=setInterval(()=>{ if(!document.getElementById('pause').checked) load(); }, autoSeconds*1000);
-  logTimer=setInterval(()=>{ if(!document.getElementById('pause').checked) loadLogs(); }, autoSeconds*1000);}
-function stopTimer(){ if(timer){clearInterval(timer);timer=null;} if(logTimer){clearInterval(logTimer);logTimer=null;}}
+    const autoSeconds = parseInt('{{AUTO_REFRESH_SECONDS}}',10) || 5;
+    let timer=null, logTimer=null;
 
-document.getElementById('pause').addEventListener('change', e => { e.target.checked ? stopTimer() : startTimer(); });
-document.getElementById('search').addEventListener('input', () => load());
-document.getElementById('copyLogs').addEventListener('click', async () => {
-  try{ await navigator.clipboard.writeText(document.getElementById('logs').textContent); }catch{}
-});
+    function fmtMs(ms){ if(ms==null) return '—'; if(ms<1000) return ms+' ms';
+      const s=ms/1000; if(s<60) return s.toFixed(1)+' s'; const m=Math.floor(s/60), r=Math.round(s%60); return m+'m '+r+'s'; }
+    function p(o, lc, pc){ return o && (o[lc]!==undefined ? o[lc] : o[pc]); }
 
-async function load(){
-  try{
-    const r = await fetch('/api/health', {cache:'no-store'}); const d = await r.json();
-    const now = new Date(p(d,'nowUtc','NowUtc')); document.getElementById('status').textContent = `Now: ${now.toISOString()}  |  events: ${p(d,'recentCount','RecentCount')}`;
+    function startTimer(){ stopTimer();
+      timer=setInterval(()=>{ if(!document.getElementById('pause').checked) load(); }, autoSeconds*1000);
+      logTimer=setInterval(()=>{ if(!document.getElementById('pause').checked) loadLogs(); }, autoSeconds*1000);
+    }
+    function stopTimer(){ if(timer){clearInterval(timer);timer=null;} if(logTimer){clearInterval(logTimer);logTimer=null;}}
 
-    const jobs = (d.scheduled || d.Scheduled || []); const exec = (d.recent || d.Recent || []);
-    const total = exec.length, ok = exec.filter(ev => !!p(ev,'success','Success')).length,
-          fail = exec.filter(ev => !p(ev,'success','Success') && !p(ev,'skippedDueToConflict','SkippedDueToConflict')).length;
-    const avg = total ? Math.round(exec.reduce((s,ev)=>s+(Number(p(ev,'durationMs','DurationMs'))||0),0)/total) : null;
-    document.getElementById('k_total').textContent = total; document.getElementById('k_ok').textContent = ok;
-    document.getElementById('k_fail').textContent = fail; document.getElementById('k_avg').textContent = avg?fmtMs(avg):'—';
+    document.getElementById('pause').addEventListener('change', e => { e.target.checked ? stopTimer() : startTimer(); });
+    document.getElementById('search').addEventListener('input', () => load());
+    document.getElementById('copyLogs').addEventListener('click', async () => { try{ await navigator.clipboard.writeText(document.getElementById('logs').textContent); }catch{} });
+    document.getElementById('btnRaw').addEventListener('click', () => {
+      const details = document.getElementById('raw'); details.open = !details.open; if(details.open) details.scrollIntoView({behavior:'smooth',block:'nearest'});
+    });
 
-    const q = document.getElementById('search').value.toLowerCase();
-    const jb = document.querySelector('#tblJobs tbody'); jb.innerHTML = '';
+    async function load(){
+      const status = document.getElementById('status');
+      const errorBox = document.getElementById('errorBox');
+      try{
+        const d = await getJson('/api/health');
+        errorBox.style.display = 'none';
+        const now = new Date(p(d,'nowUtc','NowUtc'));
+        status.textContent = `Now: ${now.toISOString()}  |  events: ${p(d,'recentCount','RecentCount')}`;
 
-    jobs.filter(j => !q || (p(j,'id','Id')||'').toLowerCase().includes(q) ||
-                           (p(j,'concurrencyKey','ConcurrencyKey')||'').toLowerCase().includes(q) ||
-                           (p(j,'cronExpression','CronExpression')||'').toLowerCase().includes(q))
-        .forEach(j => {
-            const tr = document.createElement('tr');
-            const nextLocal = p(j, 'nextRunLocal', 'NextRunLocal');
-            const nextUtc = p(j, 'nextRunUtc', 'NextRunUtc');
+        // version chip
+        const ver = document.getElementById('appVer');
+        if (ver) ver.textContent = d.version ? `v${d.version}` : '';
 
-          tr.innerHTML = `<td class="mono">${p(j,'id','Id')}</td>
-            <td class="mono">${p(j,'cronExpression','CronExpression')}</td>
-            <td>${p(j,'timeZone','TimeZone')}</td>
-            <td class="mono">${p(j,'concurrencyKey','ConcurrencyKey')||''}</td>
-            <td>${p(j,'allowParallelRuns','AllowParallelRuns')?'Yes':'No'}</td>
-            <td>${p(j,'maxRuntimeMinutes','MaxRuntimeMinutes')??''}</td>
-            <td class="mono">${nextLocal || nextUtc || ''}</td>
-            <td>${p(j,'enabled','Enabled')?'<span class="chip">ON</span>':'<span class="chip">OFF</span>'}</td>`;
-          jb.appendChild(tr);
-        });
+        const jobs = (d.scheduled || d.Scheduled || []);
+        const exec = (d.recent || d.Recent || []);
+        const total = exec.length,
+              ok = exec.filter(ev => !!p(ev,'success','Success')).length,
+              fail = exec.filter(ev => !p(ev,'success','Success') && !p(ev,'skippedDueToConflict','SkippedDueToConflict')).length;
+        const avg = total ? Math.round(exec.reduce((s,ev)=>s+(Number(p(ev,'durationMs','DurationMs'))||0),0)/total) : null;
+        document.getElementById('k_total').textContent = total;
+        document.getElementById('k_ok').textContent = ok;
+        document.getElementById('k_fail').textContent = fail;
+        document.getElementById('k_avg').textContent = avg?fmtMs(avg):'—';
 
-    const eb = document.querySelector('#tblExec tbody'); eb.innerHTML='';
-    exec.sort((a,b)=> (Date.parse(p(b,'endUtc','EndUtc')||0)||0) - (Date.parse(p(a,'endUtc','EndUtc')||0)||0))
-        .forEach(ev=>{
-          const ok = !!p(ev,'success','Success'); const sk = !!p(ev,'skippedDueToConflict','SkippedDueToConflict');
-          const status = sk?'<span class="warn">Skipped (lock)</span>':(ok?'<span class="ok">OK</span>':'<span class="err">FAIL</span>');
-          const tr=document.createElement('tr');
-          tr.innerHTML = `<td class="mono">${p(ev,'endUtc','EndUtc')||''}</td>
-            <td class="mono">${p(ev,'commandId','CommandId')||''}</td>
-            <td>${p(ev,'exitCode','ExitCode')??''}</td>
-            <td>${fmtMs(p(ev,'durationMs','DurationMs'))}</td>
-            <td>${status}</td>
-            <td class="mono">${(p(ev,'error','Error')||'').slice(0,300)}</td>`;
-          eb.appendChild(tr);
-        });
+        const q = document.getElementById('search').value.toLowerCase();
+        const jb = document.querySelector('#tblJobs tbody'); jb.innerHTML = '';
 
-    const toggle = document.getElementById('toggleRaw');
-    const pre = document.getElementById('json'); const details = document.getElementById('raw');
-    if (toggle && pre && details) { if (toggle.checked) { pre.textContent = JSON.stringify(d, null, 2); details.open = true; } else { pre.textContent = ''; details.open = false; } }
-  }catch{ document.getElementById('status').textContent = 'Error loading /api/health'; }
-}
+        jobs.filter(j => !q || (p(j,'id','Id')||'').toLowerCase().includes(q) ||
+                               (p(j,'concurrencyKey','ConcurrencyKey')||'').toLowerCase().includes(q) ||
+                               (p(j,'cronExpression','CronExpression')||'').toLowerCase().includes(q))
+            .forEach(j => {
+              const tr = document.createElement('tr');
+              const nextLocal = p(j,'nextRunLocal','NextRunLocal');
+              const nextUtc = p(j,'nextRunUtc','NextRunUtc');
+              const tip = nextUtc ? ` title="${nextUtc}"` : '';
+              tr.innerHTML = `<td class="mono" title="${p(j,'id','Id')||''}">${p(j,'id','Id')}</td>
+                <td class="mono" title="${p(j,'cronExpression','CronExpression')||''}">${p(j,'cronExpression','CronExpression')||''}</td>
+                <td title="${p(j,'timeZone','TimeZone')||''}">${p(j,'timeZone','TimeZone')||''}</td>
+                <td class="mono" title="${p(j,'concurrencyKey','ConcurrencyKey')||''}">${p(j,'concurrencyKey','ConcurrencyKey')||''}</td>
+                <td>${p(j,'allowParallelRuns','AllowParallelRuns')?'Yes':'No'}</td>
+                <td>${p(j,'maxRuntimeMinutes','MaxRuntimeMinutes')??''}</td>
+                <td class="mono"${tip}>${nextLocal || nextUtc || ''}</td>
+                <td>${p(j,'enabled','Enabled')?'<span class="chip">ON</span>':'<span class="chip">OFF</span>'}</td>`;
+              jb.appendChild(tr);
+            });
 
-async function loadLogs(){
-  try{
-    const kb=document.getElementById('tailKb').value||'128';
-    const r=await fetch(`/api/logs?tailKb=${encodeURIComponent(kb)}`,{cache:'no-store'}); const el=document.getElementById('logs');
-    if(!r.ok){ el.textContent='(no logs found)'; return; }
-    const t=await r.text(); const follow=document.getElementById('follow').checked;
-    const atBottom=(el.scrollTop+el.clientHeight+50)>=el.scrollHeight; el.textContent=t||'(empty)';
-    if(follow||atBottom){ el.scrollTop=el.scrollHeight; }
-  }catch{ document.getElementById('logs').textContent='(error reading logs)'; }
-}
+        const eb = document.querySelector('#tblExec tbody'); eb.innerHTML='';
+        exec.sort((a,b)=> (Date.parse(p(b,'endUtc','EndUtc')||0)||0) - (Date.parse(p(a,'endUtc','EndUtc')||0)||0))
+            .forEach(ev=>{
+              const ok = !!p(ev,'success','Success');
+              const sk = !!p(ev,'skippedDueToConflict','SkippedDueToConflict');
+              const stat = sk?'<span class="warn">Skipped (lock)</span>':(ok?'<span class="ok">OK</span>':'<span class="err">FAIL</span>');
+              const tr=document.createElement('tr');
+              tr.innerHTML = `<td class="mono" title="${p(ev,'endUtc','EndUtc')||''}">${p(ev,'endUtc','EndUtc')||''}</td>
+                <td class="mono" title="${p(ev,'commandId','CommandId')||''}">${p(ev,'commandId','CommandId')||''}</td>
+                <td>${p(ev,'exitCode','ExitCode')??''}</td>
+                <td>${fmtMs(p(ev,'durationMs','DurationMs'))}</td>
+                <td>${stat}</td>
+                <td class="mono" title="${(p(ev,'error','Error')||'').replaceAll('"','&quot;')}">${(p(ev,'error','Error')||'').slice(0,300)}</td>`;
+              eb.appendChild(tr);
+            });
 
-load(); loadLogs(); startTimer();
+        document.getElementById('json').textContent = JSON.stringify(d, null, 2);
 
-// ===== Job Builder modal =====
-const modal = document.getElementById('jobModal');
-document.getElementById('btnNew').onclick = () => { modal.classList.add('open'); };
-document.getElementById('closeJob').onclick = () => { modal.classList.remove('open'); };
+      }catch(err){
+        status.textContent = 'Error loading /api/health';
+        const msg = `Error loading ${API_BASE}/api/health — ${err && err.message ? err.message : err}`;
+        const box = document.getElementById('errorBox'); box.textContent = msg; box.style.display = 'block';
+      }
+    }
 
-document.getElementById('cronPrevBtn').onclick = async () => {
-  const cron = document.getElementById('cronTxt').value.trim();
-  const tz = document.getElementById('j_tz').value.trim();
-  const r = await fetch('/api/jobs/validateCron', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ cron, timeZone: tz })});
-  const d = await r.json();
-  document.getElementById('cronNext').textContent = d.ok ? (d.next||[]).join('\n') : ('Invalid: ' + d.error);
-};
+    async function loadLogs(){
+      try{
+        const kb=document.getElementById('tailKb').value||'128';
+        const t = await getText(`/api/logs?tailKb=${encodeURIComponent(kb)}`);
+        const el=document.getElementById('logs');
+        const follow=document.getElementById('follow').checked;
+        const atBottom=(el.scrollTop+el.clientHeight+50)>=el.scrollHeight;
+        el.textContent = t || '(empty)';
+        if(follow||atBottom){ el.scrollTop=el.scrollHeight; }
+      }catch{
+        document.getElementById('logs').textContent='(no logs found or error reading logs)';
+      }
+    }
 
-document.getElementById('saveJob').onclick = async () => {
-  const job = {
-    Id: document.getElementById('j_id').value.trim(),
-    Command: document.getElementById('j_cmd').value,
-    CronExpression: document.getElementById('cronTxt').value.trim(),
-    TimeZone: document.getElementById('j_tz').value.trim() || "UTC",
-    Enabled: true,
-    AllowParallelRuns: document.getElementById('j_parallel').checked,
-    ConcurrencyKey: document.getElementById('j_key').value.trim() || null,
-    MaxRuntimeMinutes: parseInt(document.getElementById('j_mrm').value||"0") || null,
-    AlertOnFail: document.getElementById('j_alert').checked,
-    CaptureOutput: document.getElementById('j_cap').checked,
-    QuietStartLog: document.getElementById('j_quiet').checked,
-    CustomAlertMessage: document.getElementById('j_msg').value || null
-  };
+    load(); loadLogs(); startTimer();
 
-  if(!job.Id || !job.Command || !job.CronExpression){ alert('Id, Command, Cron are required'); return; }
+    // ===== Job Builder modal =====
+    const modal = document.getElementById('jobModal');
+    document.getElementById('btnNew').onclick = () => { modal.classList.add('open'); };
+    document.getElementById('closeJob').onclick = () => { modal.classList.remove('open'); };
 
-  // simple admin key prompt (stored locally for convenience)
-  let key = localStorage.getItem('adminKey');
-  if(!key){ key = prompt('Admin Key'); if(!key) return; localStorage.setItem('adminKey', key); }
+    document.getElementById('cronPrevBtn').onclick = async () => {
+      try{
+        const cron = document.getElementById('cronTxt').value.trim();
+        const tz = document.getElementById('j_tz').value.trim();
+        const d = await postJson('/api/jobs/validateCron', { cron, timeZone: tz });
+        document.getElementById('cronNext').textContent = d.ok ? (d.next||[]).join('\n') : ('Invalid: ' + d.error);
+      }catch(err){
+        document.getElementById('cronNext').textContent = 'Invalid: ' + (err.message||err);
+      }
+    };
 
-  const r = await fetch('/api/jobs', {
-    method:'POST',
-    headers:{'Content-Type':'application/json','X-Admin-Key':key},
-    body: JSON.stringify(job)
-  });
+    document.getElementById('saveJob').onclick = async () => {
+      const job = {
+        Id: document.getElementById('j_id').value.trim(),
+        Command: document.getElementById('j_cmd').value,
+        CronExpression: document.getElementById('cronTxt').value.trim(),
+        TimeZone: document.getElementById('j_tz').value.trim() || "UTC",
+        Enabled: true,
+        AllowParallelRuns: document.getElementById('j_parallel').checked,
+        ConcurrencyKey: document.getElementById('j_key').value.trim() || null,
+        MaxRuntimeMinutes: parseInt(document.getElementById('j_mrm').value||"0") || null,
+        AlertOnFail: document.getElementById('j_alert').checked,
+        CaptureOutput: document.getElementById('j_cap').checked,
+        QuietStartLog: document.getElementById('j_quiet').checked,
+        CustomAlertMessage: document.getElementById('j_msg').value || null
+      };
+      if(!job.Id || !job.Command || !job.CronExpression){ alert('Id, Command, Cron are required'); return; }
 
-  if(r.ok){ modal.classList.remove('open'); load(); alert('Job created'); }
-  else { const t = await r.text(); alert('Save failed: '+t); }
-};
+      let key = localStorage.getItem('adminKey');
+      if(!key){ key = prompt('Admin Key'); if(!key) return; localStorage.setItem('adminKey', key); }
+
+      try{
+        await postJson('/api/jobs', job, { 'X-Admin-Key': key });
+        modal.classList.remove('open'); load(); alert('Job created');
+      }catch(err){
+        alert('Save failed: ' + (err.message||err));
+      }
+    };
     </script>
 </body>
 </html>

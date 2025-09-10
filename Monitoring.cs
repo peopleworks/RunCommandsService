@@ -1,21 +1,16 @@
-﻿using System;
+﻿using Cronos;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.IO;
+using System.Globalization;
 using System.Linq;
 using System.Net;
 using System.Net.Mail;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Serialization;
-using System.Threading;
-using System.Threading.Tasks;
-using Cronos;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
-using System.Globalization;
 
 
 namespace RunCommandsService
@@ -70,19 +65,19 @@ namespace RunCommandsService
     {
         public bool Enabled { get; set; } = false;
 
-        public string From { get; set; } = "";
+        public string From { get; set; } = string.Empty;
 
         public List<string> To { get; set; } = new();
 
-        public string SmtpHost { get; set; } = "";
+        public string SmtpHost { get; set; } = string.Empty;
 
         public int SmtpPort { get; set; } = 587;
 
         public bool UseSsl { get; set; } = true;
 
-        public string User { get; set; } = "";
+        public string User { get; set; } = string.Empty;
 
-        public string Password { get; set; } = "";
+        public string Password { get; set; } = string.Empty;
 
         public string SubjectTemplate
         {
@@ -139,7 +134,7 @@ Message:  ${CustomMessage}";
 
         public bool AllowParallelRuns { get; set; }
 
-        public string ConcurrencyKey { get; set; } = "";
+        public string ConcurrencyKey { get; set; } = string.Empty;
 
         public int? MaxRuntimeMinutes { get; set; }
 
@@ -149,6 +144,31 @@ Message:  ${CustomMessage}";
     }
 
     public record CronPreviewReq(string Cron, string TimeZone);
+
+    public class ScheduledCommandPayload
+    {
+        public string Id { get; set; }
+
+        public string Command { get; set; }
+
+        public string CronExpression { get; set; }
+
+        public string TimeZone { get; set; }
+
+        public bool Enabled { get; set; }
+
+        public bool AllowParallelRuns { get; set; }
+
+        public string ConcurrencyKey { get; set; }
+
+        public int? MaxRuntimeMinutes { get; set; }
+
+        public string NextRunUtc { get; set; }
+
+        public string NextRunLocal { get; set; }
+
+        public string CustomAlertMessage { get; set; }
+    }
     #endregion
 
     #region Notifiers
@@ -270,13 +290,13 @@ Message:  ${CustomMessage}";
                     .Replace("${DurationMs}", ev.DurationMs.ToString());
 
                 string body = _options.Notifiers.Email.BodyTemplate
-                    .Replace("${Command}", ev.Command ?? "")
+                    .Replace("${Command}", ev.Command ?? string.Empty)
                     .Replace("${StartUtc}", ev.StartUtc.ToString("o"))
                     .Replace("${EndUtc}", ev.EndUtc.ToString("o"))
                     .Replace("${ExitCode}", ev.ExitCode?.ToString() ?? "null")
                     .Replace("${DurationMs}", ev.DurationMs.ToString())
-                    .Replace("${Error}", ev.Error ?? "")
-                    .Replace("${CustomMessage}", schedule?.CustomAlertMessage ?? "");
+                    .Replace("${Error}", ev.Error ?? string.Empty)
+                    .Replace("${CustomMessage}", schedule?.CustomAlertMessage ?? string.Empty);
 
                 _ = _notifier.NotifyAsync(subject, body);
             } catch(Exception ex)
@@ -285,39 +305,23 @@ Message:  ${CustomMessage}";
             }
         }
 
-        //public object GetHealthPayload()
-        //{
-        //    var recent = _events.Reverse().Take(100).ToList(); // newest first
-        //    List<ScheduledCommandView> schedule;
-        //    lock(_scheduleLock)
-        //        schedule = _scheduleSnapshot.ToList();
 
-        //    return new
-        //    {
-        //        nowUtc = DateTime.UtcNow.ToString("o"),
-        //        recentCount = recent.Count,
-        //        recent,
-        //        consecutiveFailures = _consecutiveFailures.ToDictionary(kv => kv.Key, kv => kv.Value),
-        //        scheduled = schedule
-        //    };
-        //}
-
-     
         public object GetHealthPayload()
         {
             var recent = _events.Reverse().Take(100).ToList(); // newest first
 
             List<ScheduledCommandView> schedule;
-            lock (_scheduleLock)
+            lock(_scheduleLock)
                 schedule = _scheduleSnapshot.ToList();
 
-            // Project jobs and compute local next-run using each job's TimeZone
-            var scheduledForPayload = schedule.Select(s =>
+            // Build a concrete, serializer-friendly list
+            var scheduledForPayload = new List<ScheduledCommandPayload>(schedule.Count);
+            foreach(var s in schedule)
             {
                 string nextLocal = null;
                 try
                 {
-                    if (!string.IsNullOrWhiteSpace(s.NextRunUtc) &&
+                    if(!string.IsNullOrWhiteSpace(s.NextRunUtc) &&
                         DateTime.TryParse(
                             s.NextRunUtc,
                             CultureInfo.InvariantCulture,
@@ -329,39 +333,67 @@ Message:  ${CustomMessage}";
                         var local = TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(nextUtc, DateTimeKind.Utc), tz);
                         nextLocal = $"{local:yyyy-MM-dd HH:mm:ss} ({tzId})";
                     }
-                }
-                catch
+                } catch
                 {
-                    // If TZ id is invalid or conversion fails, we just keep nextLocal = null
+                    // leave nextLocal = null on any failure
                 }
 
-                return new
-                {
-                    s.Id,
-                    s.Command,
-                    s.CronExpression,
-                    s.TimeZone,
-                    s.Enabled,
-                    s.AllowParallelRuns,
-                    s.ConcurrencyKey,
-                    s.MaxRuntimeMinutes,
-                    NextRunUtc = s.NextRunUtc,  // keep original
-                    NextRunLocal = nextLocal,     // NEW (single casing to avoid conflicts)
-                    s.CustomAlertMessage
-                };
-            }).ToList();
+                scheduledForPayload.Add(
+                    new ScheduledCommandPayload
+                    {
+                        Id = s.Id,
+                        Command = s.Command,
+                        CronExpression = s.CronExpression,
+                        TimeZone = s.TimeZone,
+                        Enabled = s.Enabled,
+                        AllowParallelRuns = s.AllowParallelRuns,
+                        ConcurrencyKey = s.ConcurrencyKey,
+                        MaxRuntimeMinutes = s.MaxRuntimeMinutes,
+                        NextRunUtc = s.NextRunUtc,
+                        NextRunLocal = nextLocal,
+                        CustomAlertMessage = s.CustomAlertMessage
+                    });
+            }
 
             return new
             {
+                version = GetProductVersion(),
                 nowUtc = DateTime.UtcNow.ToString("o"),
                 recentCount = recent.Count,
                 recent,
                 consecutiveFailures = _consecutiveFailures.ToDictionary(kv => kv.Key, kv => kv.Value),
-                scheduled = scheduledForPayload
+                scheduled = scheduledForPayload,
+
+                // NEW: simple UI hints for the dashboard
+                ui = new
+                {
+                    showRawJsonToggle = true    // or bind from options if you prefer
+                    // title = _options?.Dashboard?.Title
+                }
             };
         }
 
 
+        private static string GetProductVersion()
+        {
+            try
+            {
+                var asm = typeof(Monitoring).Assembly;
+                var info = asm.GetCustomAttributes(
+                    typeof(System.Reflection.AssemblyInformationalVersionAttribute),
+                    false)
+                    .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
+                    .FirstOrDefault()?.InformationalVersion;
+                if(!string.IsNullOrWhiteSpace(info))
+                    return info;
+
+                // Fall back to AssemblyVersion
+                return asm.GetName().Version?.ToString() ?? "unknown";
+            } catch
+            {
+                return "unknown";
+            }
+        }
     }
     #endregion
 
@@ -391,23 +423,32 @@ Message:  ${CustomMessage}";
 
         public Task StartAsync(CancellationToken cancellationToken)
         {
-            if(!_options.Value.EnableHttpEndpoint)
+            if (!_options.Value.EnableHttpEndpoint)
                 return Task.CompletedTask;
 
             _listener = new HttpListener();
-            foreach(var p in _options.Value.HttpPrefixes ?? new List<string>())
-            {
+
+            var prefixes = (_options.Value.HttpPrefixes ?? new List<string>())
+                .Where(p => !string.IsNullOrWhiteSpace(p))
+                .Select(p => p.Trim())
+                .Select(p => p.EndsWith("/") ? p : p + "/")
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (prefixes.Count == 0)
+                prefixes.Add("http://localhost:5058/");
+
+            // ✅ Use the normalized list
+            foreach (var p in prefixes)
                 _listener.Prefixes.Add(p);
-            }
 
             try
             {
                 _listener.Start();
                 _ = AcceptLoop(cancellationToken);
-                _logger.LogInformation(
-                    "Health HTTP endpoint listening on {Prefixes}",
-                    string.Join(", ", _options.Value.HttpPrefixes));
-            } catch(Exception ex)
+                _logger.LogInformation("Health HTTP endpoint listening on {Prefixes}", string.Join(", ", prefixes));
+            }
+            catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to start HTTP endpoint");
             }
@@ -416,6 +457,7 @@ Message:  ${CustomMessage}";
             SetupHtmlWatcher(_dashboardPath);
             return Task.CompletedTask;
         }
+
 
         public Task StopAsync(CancellationToken cancellationToken)
         {
@@ -525,36 +567,58 @@ Message:  ${CustomMessage}";
         #region Dashboard & Logs (sync)
         private void ServeDashboard(HttpListenerContext ctx)
         {
-            if(!_options.Value.Dashboard.Enabled)
+            try
             {
-                ctx.Response.StatusCode = 404;
+                if (!_options.Value.Dashboard.Enabled)
+                {
+                    ctx.Response.StatusCode = 404;
+                    ctx.Response.Close();
+                    return;
+                }
+
+                string html;
+                try
+                {
+                    if (File.Exists(_dashboardPath))
+                        html = File.ReadAllText(_dashboardPath, Encoding.UTF8);
+                    else
+                        html = "<!doctype html><meta charset=\"utf-8\"><title>Dashboard</title><h1>Dashboard file not found</h1>";
+                }
+                catch
+                {
+                    html = "<!doctype html><meta charset=\"utf-8\"><title>Dashboard</title><h1>Error reading dashboard.html</h1>";
+                }
+
+                html = (html ?? string.Empty)
+                    .Replace("{{TITLE}}", _options.Value.Dashboard.Title ?? "Scheduled Command Executor")
+                    .replaceInsensitive("{{AUTO_REFRESH_SECONDS}}", (_options.Value.Dashboard.AutoRefreshSeconds > 0 ? _options.Value.Dashboard.AutoRefreshSeconds : 5).ToString())
+                    .Replace(
+                        "{{RAW_TOGGLE}}",
+                        _options.Value.Dashboard.ShowRawJsonToggle
+                            ? "<label class=\"pill\"><input id=\"toggleRaw\" type=\"checkbox\" checked> Show raw JSON</label>"
+                            : string.Empty);
+
+                var bytes = Encoding.UTF8.GetBytes(html);
+                ctx.Response.ContentType = "text/html; charset=utf-8";
+                ctx.Response.StatusCode = 200;
+                ctx.Response.OutputStream.Write(bytes, 0, bytes.Length);
                 ctx.Response.Close();
-                return;
             }
-
-            string html;
-            if(File.Exists(_dashboardPath))
+            catch (Exception ex)
             {
-                html = File.ReadAllText(_dashboardPath, Encoding.UTF8);
-            } else
-            {
-                html = "<html><body><h1>Dashboard file not found</h1></body></html>";
+                try
+                {
+                    _logger.LogError(ex, "Error serving dashboard");
+                    ctx.Response.StatusCode = 500;
+                    var b = Encoding.UTF8.GetBytes("<h1>Internal error</h1>");
+                    ctx.Response.ContentType = "text/html; charset=utf-8";
+                    ctx.Response.OutputStream.Write(b, 0, b.Length);
+                    ctx.Response.Close();
+                }
+                catch { /* swallow */ }
             }
-
-            html = html.Replace("{{TITLE}}", _options.Value.Dashboard.Title)
-                .replaceInsensitive("{{AUTO_REFRESH_SECONDS}}", _options.Value.Dashboard.AutoRefreshSeconds.ToString())
-                .Replace(
-                    "{{RAW_TOGGLE}}",
-                    _options.Value.Dashboard.ShowRawJsonToggle
-                        ? "<label class=\"pill\"><input id=\"toggleRaw\" type=\"checkbox\" checked> Show raw JSON</label>"
-                        : "");
-
-            var bytes = Encoding.UTF8.GetBytes(html);
-            ctx.Response.ContentType = "text/html; charset=utf-8";
-            ctx.Response.StatusCode = 200;
-            ctx.Response.OutputStream.Write(bytes, 0, bytes.Length);
-            ctx.Response.Close();
         }
+
 
         private void ServeLogsTail(HttpListenerContext ctx)
         {
@@ -610,8 +674,23 @@ Message:  ${CustomMessage}";
         {
             try
             {
-                var cron = CronExpression.Parse(dto?.Cron ?? "");
-                var tzId = string.IsNullOrWhiteSpace(dto?.TimeZone) ? "UTC" : dto.TimeZone;
+                if(dto == null || string.IsNullOrWhiteSpace(dto.Cron))
+                {
+                    WriteJson(ctx, new { ok = false, error = "Missing 'cron' field." }, 400);
+                    return;
+                }
+
+                CronExpression cron;
+                try
+                {
+                    cron = CronExpression.Parse(dto.Cron);
+                } catch(Exception ex)
+                {
+                    WriteJson(ctx, new { ok = false, error = $"Invalid cron: {ex.Message}" }, 400);
+                    return;
+                }
+
+                var tzId = string.IsNullOrWhiteSpace(dto.TimeZone) ? "UTC" : dto.TimeZone;
                 TimeZoneInfo tz;
                 try
                 {
@@ -620,22 +699,44 @@ Message:  ${CustomMessage}";
                 {
                     tz = TimeZoneInfo.Utc;
                 }
-                var cur = DateTime.UtcNow;
-                var next = new List<string>();
+
+                var results = new List<string>(5);
+                var cursorUtc = DateTime.UtcNow;
+
                 for(int i = 0; i < 5; i++)
                 {
-                    var n = cron.GetNextOccurrence(cur, tz);
-                    if(n == null)
+                    // Same shim as the scheduler:
+                    var cursorLocal = TimeZoneInfo.ConvertTimeFromUtc(cursorUtc, tz);
+                    var fakeUtcCursor = DateTime.SpecifyKind(cursorLocal, DateTimeKind.Utc);
+
+                    var nextLocalFakeUtc = cron.GetNextOccurrence(fakeUtcCursor);
+                    if(nextLocalFakeUtc == null)
                         break;
-                    next.Add(n.Value.ToUniversalTime().ToString("o"));
-                    cur = n.Value.AddSeconds(1);
+
+                    var nextLocal = DateTime.SpecifyKind(nextLocalFakeUtc.Value, DateTimeKind.Unspecified);
+                    var nextUtc = ConvertLocalToUtc(nextLocal, tz);
+                    results.Add(nextUtc.ToString("o"));
+
+                    // Advance local cursor by 1s, then convert back to UTC for the next iteration
+                    var nextCursorLocal = nextLocal.AddSeconds(1);
+                    cursorUtc = ConvertLocalToUtc(nextCursorLocal, tz);
                 }
-                WriteJson(ctx, new { ok = true, next }, 200);
+
+                WriteJson(ctx, new { ok = true, timeZone = tz.Id, next = results }, 200);
             } catch(Exception ex)
             {
                 WriteJson(ctx, new { ok = false, error = ex.Message }, 400);
             }
         }
+
+        private static DateTime ConvertLocalToUtc(DateTime localUnspec, TimeZoneInfo tz)
+        {
+            if(tz.IsInvalidTime(localUnspec))
+                localUnspec = localUnspec.AddHours(1);
+
+            return TimeZoneInfo.ConvertTimeToUtc(localUnspec, tz);
+        }
+
 
         private bool IsAuthorized(HttpListenerContext ctx)
         {

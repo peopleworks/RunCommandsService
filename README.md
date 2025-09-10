@@ -1,64 +1,16 @@
 # Scheduled Command Executor Windows Service
 
-## ✨ What’s new (v2.4)
+**A lightweight Windows service** that runs commands on cron schedules, with:
 
-- **Job Builder in the dashboard** – create jobs from the UI, with cron builder and **live next-run preview**.
-- **Write APIs** – `/api/jobs` (create/update/delete) and `/api/jobs/validateCron` (preview next occurrences).
-- **Admin key** – protect write endpoints with `X-Admin-Key` (see config below).
-- **Graceful shutdown** – the scheduler treats service shutdown as normal (no error logs), and kills child processes politely.
-- **Docs** – expanded `appsettings.json` reference with all per-job flags (`CaptureOutput`, `QuietStartLog`, `AllowParallelRuns`, `ConcurrencyKey`, `MaxRuntimeMinutes`, `CustomAlertMessage`, `TimeZone`) and monitoring options.
+* concurrency controls,
+* per-job timeouts,
+* live monitoring dashboard,
+* alerts/hooks (optional),
+* and a simple JSON config with hot-reload.
 
-## 🚀 What’s new (v2.3)
+> **New in v2.5:** fully responsive dashboard (no horizontal scrolling), visible app version, reliable time-zone math (DST safe), cron preview that matches runtime, raw JSON toggle, and safer error handling for bad cron/disabled jobs.
 
-- **Dashboard UX upgrade** — wide mode toggle, sticky table headers, and both vertical & horizontal scroll for big lists.
-- **KPI cards** restored and styled (Events, OK, Failed, Avg Duration).
-- **Live Service Logs** panel with tail sizes, follow, and copy to clipboard (backs `/api/logs`).
-- **More robust scheduling** — next occurrence is computed from the *due* instant, reducing missed ticks under load.
-- **Reliable process handling** — clean timeout/kill with `WaitForExitAsync`.
-- **Docs** — added recipes for **silent jobs** and **detached “fire‑and‑forget”** execution.
-
-## 🔔 What’s new (v2.2)
-
-- **Silent jobs**: per-task flags `CaptureOutput` and `QuietStartLog` let you run jobs without streaming their stdout/stderr into the service logs.
-- **No behavior change by default**: both flags default to `CaptureOutput: true`, `QuietStartLog: false` to preserve existing behavior.
-- **Observability intact**: we still track start/end time, duration, **exit code**, alerts, and show results on the dashboard.
-- **Docs & examples**: added a dedicated “Silent jobs” section with ready-to-copy JSON.
-
-### Quick example
-```json
-{
-  "Id": "SistemaAutomatizadoDashboard",
-  "Command": "cmd /c \"pushd C:\\\\Apps\\\\SistemaAutomatizadoDashboard && \\\"%ProgramFiles%\\\\nodejs\\\\node.exe\\\" src\\\\main.js process\"",
-  "CronExpression": "40 23 * * 1-5",
-  "TimeZone": "Eastern Standard Time",
-  "Enabled": true,
-  "AllowParallelRuns": false,
-  "ConcurrencyKey": "dashboard",
-  "MaxRuntimeMinutes": 60,
-  "AlertOnFail": true,
-  "CaptureOutput": false,
-  "QuietStartLog": true,
-  "CustomAlertMessage": "SistemaAutomatizadoDashboard failed on server; check the app’s own logs for details."
-}
-```
-## ✅ What’s new (v2.1)
-
-- **Personalized email alerts** — Subject/body **templates** with tokens and per‑job `CustomAlertMessage`.
-- **Full HTML monitoring dashboard** at `/` plus `GET /api/health` JSON; now loads UI from an external `Monitoring.Dashboard.HtmlPath`.
-- **Polished UI** — dark/light theme, KPIs, search, sorting, pause auto‑refresh.
-- **More examples & use cases** for real‑world patterns (locking, rate‑limit staggering, time zones, long‑running guardrails).
-- **API payload** standardized to **camelCase** keys for friendlier front‑end consumption.
-- 
-## ✅ What’s new (v2)
-
-- **Monitoring & Health** — lightweight HTTP health endpoint (JSON) with rolling execution history.
-- **Proactive Alerts** — Email and/or Webhook (Slack/Teams/Discord) on **consecutive failures** and **slow runs**.
-- **Safe Concurrency** — global `MaxParallelism` plus per-job `ConcurrencyKey` locks to avoid overlapping tasks on shared resources.
-- **Runtime Limits** — per-job `MaxRuntimeMinutes` auto‑kills hung processes.
-- **Precise Scheduler** — uses Cronos to compute the next exact occurrence and prevent duplicate triggers.
-- **Hot‑reload** — changes to `appsettings.json` are picked up without restarting the service.
-
-A robust Windows Service that executes scheduled commands based on cron expressions defined in a configuration file. The service supports hot-reload configuration and provides comprehensive logging capabilities.
+---
 
 ## 🔍 Overview
 
@@ -593,4 +545,73 @@ processes are **killed cleanly** on timeout **or** shutdown.
 - `DELETE /api/jobs/{id}`
 
 ## Changelog
-- **v2** — Monitoring + Alerts + Safe Concurrency + Precise Scheduling
+
+##  ✅ Dashboard (v2.5)
+
+* **Responsive layout** — no page-level horizontal scrolling. Cells ellipsize, sections scroll within themselves.
+* **Version chip** — visible at the top (e.g., `v2.4.0+…`) so testers know what’s deployed.
+* **Cards** — Events, OK, Failed, Avg Duration.
+* **Scheduled Jobs** — shows cron, TZ, key, parallel/timeout, **Next run in job’s TZ** (hover to see UTC).
+* **Recent Executions** — sortable list with exit code, duration, status (OK / FAIL / Skipped (lock)).
+* **Service Logs (tail)** — live tail with follow & size selector; wraps long lines.
+* **Raw JSON** — button toggles pretty payload for quick diagnostics.
+* **Job Builder (experimental)** — modal to create jobs via API, with cron preview (`/api/jobs/validateCron`). Requires `Monitoring.AdminKey`.
+
+## ✨ What’s new (v2.4)
+
+- **Job Builder in the dashboard** – create jobs from the UI, with cron builder and **live next-run preview**.
+- **Write APIs** – `/api/jobs` (create/update/delete) and `/api/jobs/validateCron` (preview next occurrences).
+- **Admin key** – protect write endpoints with `X-Admin-Key` (see config below).
+- **Graceful shutdown** – the scheduler treats service shutdown as normal (no error logs), and kills child processes politely.
+- **Docs** – expanded `appsettings.json` reference with all per-job flags (`CaptureOutput`, `QuietStartLog`, `AllowParallelRuns`, `ConcurrencyKey`, `MaxRuntimeMinutes`, `CustomAlertMessage`, `TimeZone`) and monitoring options.
+
+## 🚀 What’s new (v2.3)
+
+- **Dashboard UX upgrade** — wide mode toggle, sticky table headers, and both vertical & horizontal scroll for big lists.
+- **KPI cards** restored and styled (Events, OK, Failed, Avg Duration).
+- **Live Service Logs** panel with tail sizes, follow, and copy to clipboard (backs `/api/logs`).
+- **More robust scheduling** — next occurrence is computed from the *due* instant, reducing missed ticks under load.
+- **Reliable process handling** — clean timeout/kill with `WaitForExitAsync`.
+- **Docs** — added recipes for **silent jobs** and **detached “fire‑and‑forget”** execution.
+
+## 🔔 What’s new (v2.2)
+
+- **Silent jobs**: per-task flags `CaptureOutput` and `QuietStartLog` let you run jobs without streaming their stdout/stderr into the service logs.
+- **No behavior change by default**: both flags default to `CaptureOutput: true`, `QuietStartLog: false` to preserve existing behavior.
+- **Observability intact**: we still track start/end time, duration, **exit code**, alerts, and show results on the dashboard.
+- **Docs & examples**: added a dedicated “Silent jobs” section with ready-to-copy JSON.
+
+### Quick example
+```json
+{
+  "Id": "SistemaAutomatizadoDashboard",
+  "Command": "cmd /c \"pushd C:\\\\Apps\\\\SistemaAutomatizadoDashboard && \\\"%ProgramFiles%\\\\nodejs\\\\node.exe\\\" src\\\\main.js process\"",
+  "CronExpression": "40 23 * * 1-5",
+  "TimeZone": "Eastern Standard Time",
+  "Enabled": true,
+  "AllowParallelRuns": false,
+  "ConcurrencyKey": "dashboard",
+  "MaxRuntimeMinutes": 60,
+  "AlertOnFail": true,
+  "CaptureOutput": false,
+  "QuietStartLog": true,
+  "CustomAlertMessage": "SistemaAutomatizadoDashboard failed on server; check the app’s own logs for details."
+}
+```
+## ✅ What’s new (v2.1)
+
+- **Personalized email alerts** — Subject/body **templates** with tokens and per‑job `CustomAlertMessage`.
+- **Full HTML monitoring dashboard** at `/` plus `GET /api/health` JSON; now loads UI from an external `Monitoring.Dashboard.HtmlPath`.
+- **Polished UI** — dark/light theme, KPIs, search, sorting, pause auto‑refresh.
+- **More examples & use cases** for real‑world patterns (locking, rate‑limit staggering, time zones, long‑running guardrails).
+- **API payload** standardized to **camelCase** keys for friendlier front‑end consumption.
+- 
+## ✅ What’s new (v2)
+
+- **Monitoring & Health** — lightweight HTTP health endpoint (JSON) with rolling execution history.
+- **Proactive Alerts** — Email and/or Webhook (Slack/Teams/Discord) on **consecutive failures** and **slow runs**.
+- **Safe Concurrency** — global `MaxParallelism` plus per-job `ConcurrencyKey` locks to avoid overlapping tasks on shared resources.
+- **Runtime Limits** — per-job `MaxRuntimeMinutes` auto‑kills hung processes.
+- **Precise Scheduler** — uses Cronos to compute the next exact occurrence and prevent duplicate triggers.
+- **Hot‑reload** — changes to `appsettings.json` are picked up without restarting the service.
+
