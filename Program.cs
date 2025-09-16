@@ -1,9 +1,10 @@
 ﻿using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Hosting.WindowsServices;
 using Microsoft.Extensions.Logging;
 using RunCommandsService;
-using static RunCommandsService.WindowsServiceHelpers;
+using ServiceHelpers = RunCommandsService.WindowsServiceHelpers;
 
 public class Program
 {
@@ -14,9 +15,9 @@ public class Program
             .UseWindowsService(options =>
             {
                 options.ServiceName = "Scheduled Command Executor";
-                WindowsServiceHelpers.SetServiceProperties(
+                ServiceHelpers.SetServiceProperties(
                     "Scheduled Command Executor",
-                    new ServiceProperties
+                    new ServiceHelpers.ServiceProperties
                     {
                         DisplayName = "Scheduled Command Executor Service",
                         Description = "Executes cron-based commands with monitoring, alerts, and safe concurrency"
@@ -32,6 +33,13 @@ public class Program
                     options.LogDirectory = "Logs";
                     options.FileSizeLimit = 10 * 1024 * 1024; // 10MB
                     options.RetainDays = 30;
+                    // Respect configured Logging:LogLevel:Default if present
+                    try
+                    {
+                        var lvl = hostContext.Configuration["Logging:LogLevel:Default"];
+                        if(!string.IsNullOrWhiteSpace(lvl) && Enum.TryParse<LogLevel>(lvl, true, out var parsed))
+                            options.MinLevel = parsed;
+                    } catch { }
                 });
             })
             .ConfigureServices((hostContext, services) =>
@@ -39,8 +47,8 @@ public class Program
                 // Options bindings (use the config already loaded by CreateDefaultBuilder)
                 services.Configure<SchedulerOptions>(hostContext.Configuration.GetSection("Scheduler"));
                 services.Configure<MonitoringOptions>(hostContext.Configuration.GetSection("Monitoring"));
-                // If you later add a webhook notifier section:
-                // services.Configure<WebhookOptions>(hostContext.Configuration.GetSection("Notifiers:Webhook"));
+                // Webhook notifier options (if used)
+                services.Configure<WebhookOptions>(hostContext.Configuration.GetSection("Monitoring:Notifiers:Webhook"));
 
                 // Core singletons
                 services.AddSingleton<ConcurrencyManager>();

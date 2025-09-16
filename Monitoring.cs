@@ -51,6 +51,13 @@ namespace RunCommandsService
 
         public int SlowRunMs { get; set; } = 120000;
 
+        // Backcompat with older config key name
+        public int ExecutionTimeMsThreshold
+        {
+            get => SlowRunMs;
+            set => SlowRunMs = value;
+        }
+
         public bool EmailOnFail { get; set; } = true;
 
         public bool EmailOnConsecutiveFailures { get; set; } = true;
@@ -59,6 +66,7 @@ namespace RunCommandsService
     public class NotifiersOptions
     {
         public EmailOptions Email { get; set; } = new();
+        public WebhookOptions Webhook { get; set; } = new();
     }
 
     public class EmailOptions
@@ -226,17 +234,28 @@ Message:  ${CustomMessage}";
         private readonly MonitoringOptions _options;
         private readonly IAlertNotifier _notifier;
         private readonly ILogger<ExecutionMonitor> _logger;
+        private readonly ILoggerFactory _loggerFactory;
 
         private readonly ConcurrentQueue<ExecutionEvent> _events = new();
         private readonly ConcurrentDictionary<string, int> _consecutiveFailures = new();
         private readonly object _scheduleLock = new();
         private List<ScheduledCommandView> _scheduleSnapshot = new();
 
-        public ExecutionMonitor(IOptions<MonitoringOptions> options, ILogger<ExecutionMonitor> logger)
+        public ExecutionMonitor(IOptions<MonitoringOptions> options, ILogger<ExecutionMonitor> logger, ILoggerFactory loggerFactory)
         {
             _options = options.Value;
             _logger = logger;
+            _loggerFactory = loggerFactory;
             var notifiers = new List<IAlertNotifier> { new EmailNotifier(_options.Notifiers.Email) };
+            try
+            {
+                if(_options?.Notifiers?.Webhook != null)
+                {
+                    var whLogger = _loggerFactory.CreateLogger<WebhookNotifier>();
+                    notifiers.Add(new WebhookNotifier(Microsoft.Extensions.Options.Options.Create(_options.Notifiers.Webhook), whLogger));
+                }
+            }
+            catch { /* ignore wiring errors */ }
             _notifier = new CompositeNotifier(notifiers);
         }
 
@@ -329,9 +348,9 @@ Message:  ${CustomMessage}";
                             out var nextUtc))
                     {
                         var tzId = string.IsNullOrWhiteSpace(s.TimeZone) ? "UTC" : s.TimeZone;
-                        var tz = TimeZoneInfo.FindSystemTimeZoneById(tzId);
+                        var tz = TimeZoneHelper.FindTimeZone(tzId);
                         var local = TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(nextUtc, DateTimeKind.Utc), tz);
-                        nextLocal = $"{local:yyyy-MM-dd HH:mm:ss} ({tzId})";
+                        nextLocal = $"{local:yyyy-MM-dd HH:mm:ss} ({tz.Id})";
                     }
                 } catch
                 {
@@ -367,8 +386,7 @@ Message:  ${CustomMessage}";
                 // NEW: simple UI hints for the dashboard
                 ui = new
                 {
-                    showRawJsonToggle = true    // or bind from options if you prefer
-                    // title = _options?.Dashboard?.Title
+                    showRawJsonToggle = _options?.Dashboard?.ShowRawJsonToggle == true
                 }
             };
         }
@@ -630,10 +648,13 @@ Message:  ${CustomMessage}";
 
             var logDir = Path.Combine(baseDir, "log");
             var logsDir = Path.Combine(baseDir, "logs");
+            var LogsDir = Path.Combine(baseDir, "Logs");
             if(Directory.Exists(logDir))
                 candidates.AddRange(SafeGetFiles(logDir, "*.txt"));
             if(Directory.Exists(logsDir))
                 candidates.AddRange(SafeGetFiles(logsDir, "*.txt"));
+            if(Directory.Exists(LogsDir))
+                candidates.AddRange(SafeGetFiles(LogsDir, "*.txt"));
 
             if(candidates.Count == 0)
             {
@@ -691,14 +712,7 @@ Message:  ${CustomMessage}";
                 }
 
                 var tzId = string.IsNullOrWhiteSpace(dto.TimeZone) ? "UTC" : dto.TimeZone;
-                TimeZoneInfo tz;
-                try
-                {
-                    tz = TimeZoneInfo.FindSystemTimeZoneById(tzId);
-                } catch
-                {
-                    tz = TimeZoneInfo.Utc;
-                }
+                TimeZoneInfo tz = TimeZoneHelper.FindTimeZone(tzId);
 
                 var results = new List<string>(5);
                 var cursorUtc = DateTime.UtcNow;

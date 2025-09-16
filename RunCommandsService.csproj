@@ -5,14 +5,14 @@
 		<TargetFramework>net9.0</TargetFramework>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
-		<Version>2.4.0</Version>
-		<InformationalVersion>2.4.0</InformationalVersion>
+		<Version>2.6.0</Version>
+		<InformationalVersion>2.6.0</InformationalVersion>
 	</PropertyGroup>
 
 	<ItemGroup>
 		<PackageReference Include="Cronos" Version="0.11.1" />
-		<PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.8" />
-		<PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="9.0.8" />
+		<PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.9" />
+		<PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="9.0.9" />
 	</ItemGroup>
 
 	<ItemGroup>

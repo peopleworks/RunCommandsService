@@ -8,6 +8,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Linq;
 using System.Runtime.Versioning;
+using System.Threading;
 
 namespace RunCommandsService
 {
@@ -19,6 +20,7 @@ namespace RunCommandsService
         private readonly ConcurrencyManager _concurrency;
         private readonly SchedulerOptions _schedOptions;
         private FileSystemWatcher _configWatcher;
+        private readonly SemaphoreSlim _parallelism;
 
         private List<ScheduledCommand> _commands = new();
         private readonly object _lockObject = new object();
@@ -45,6 +47,8 @@ namespace RunCommandsService
             _concurrency = concurrency;
             _logger = logger;
 
+            _parallelism = new SemaphoreSlim(Math.Max(1, _schedOptions.MaxParallelism));
+
             LoadCommands();
             SetupConfigurationWatcher();
         }
@@ -70,13 +74,7 @@ namespace RunCommandsService
         {
             if(string.IsNullOrWhiteSpace(tz))
                 return TimeZoneInfo.Utc;
-            try
-            {
-                return TimeZoneInfo.FindSystemTimeZoneById(tz);
-            } catch
-            {
-                return TimeZoneInfo.Utc;
-            }
+            return TimeZoneHelper.FindTimeZone(tz);
         }
 
 
@@ -93,13 +91,13 @@ namespace RunCommandsService
 
                 // Next LOCAL occurrence on that wall-clock timeline
                 var nextLocalFakeUtc = cron.GetNextOccurrence(fakeUtcCursor);
-                if (nextLocalFakeUtc == null) return null;
+                if(nextLocalFakeUtc == null)
+                    return null;
 
                 // Interpret as local and convert FROM tz TO real UTC
                 var nextLocal = DateTime.SpecifyKind(nextLocalFakeUtc.Value, DateTimeKind.Unspecified);
                 return ConvertLocalToUtc(nextLocal, tz);
-            }
-            catch
+            } catch
             {
                 return null;
             }
@@ -109,14 +107,12 @@ namespace RunCommandsService
         private static DateTime ConvertLocalToUtc(DateTime localUnspec, TimeZoneInfo tz)
         {
             // Spring-forward "skipped" local times — nudge forward to a valid instant
-            if (tz.IsInvalidTime(localUnspec))
+            if(tz.IsInvalidTime(localUnspec))
                 localUnspec = localUnspec.AddHours(1);
 
             // For ambiguous times (fall-back), ConvertTimeToUtc() will choose standard time by default.
             return TimeZoneInfo.ConvertTimeToUtc(localUnspec, tz);
         }
-
-
 
 
         private void RefreshMonitorSnapshot()
@@ -311,62 +307,89 @@ namespace RunCommandsService
 
         // ---------- Command runner ----------
 
+        // Fix for CS1524 and CS1513 in RunCommandAsync method
         private async Task RunCommandAsync(ScheduledCommand command, CancellationToken ct)
         {
-            using var acquired = await _concurrency.TryAcquireAsync(
-                command.ConcurrencyKey ?? command.Id,
-                command.AllowParallelRuns,
-                ct);
-
-            if(acquired == null)
-            {
-                _logger.LogWarning(
-                    "Skipping {Id} due to concurrency key in use ({Key})",
-                    command.Id,
-                    command.ConcurrencyKey);
-
-                _monitor.Record(
-                    new ExecutionEvent
-                    {
-                        CommandId = command.Id,
-                        Command = command.Command,
-                        StartUtc = DateTime.UtcNow,
-                        EndUtc = DateTime.UtcNow,
-                        Success = true,
-                        SkippedDueToConflict = true
-                    });
-                return;
-            }
-
-            var start = DateTime.UtcNow;
-
+            await _parallelism.WaitAsync(ct);
             try
             {
-                if(!command.QuietStartLog)
-                    _logger.LogInformation("Executing {Id}: {Command}", command.Id, command.Command);
+                using var acquired = await _concurrency.TryAcquireAsync(
+                    command.ConcurrencyKey ?? command.Id,
+                    command.AllowParallelRuns,
+                    ct);
 
-                // Linked CTS so we can differentiate shutdown vs per-job timeout.
-                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                if(command.MaxRuntimeMinutes is int maxMin && maxMin > 0)
-                    cts.CancelAfter(TimeSpan.FromMinutes(maxMin));
-
-                var psi = new ProcessStartInfo("cmd.exe")
+                if(acquired == null)
                 {
-                    Arguments = $"/c {command.Command}",
-                    RedirectStandardOutput = command.CaptureOutput,
-                    RedirectStandardError = command.CaptureOutput,
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                };
+                    _logger.LogWarning(
+                        "Skipping {Id} due to concurrency key in use ({Key})",
+                        command.Id,
+                        command.ConcurrencyKey);
 
-                using var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
-                if(!process.Start())
-                    throw new InvalidOperationException($"Failed to start process for {command.Id}");
+                    _monitor.Record(
+                        new ExecutionEvent
+                        {
+                            CommandId = command.Id,
+                            Command = command.Command,
+                            StartUtc = DateTime.UtcNow,
+                            EndUtc = DateTime.UtcNow,
+                            Success = true,
+                            SkippedDueToConflict = true
+                        });
+                    return;
+                }
 
-                // If the host is shutting down, be nice to the child process.
-                using var shutdownKiller = ct.Register(
-                    () =>
+                var start = DateTime.UtcNow;
+
+                try
+                {
+                    if(!command.QuietStartLog)
+                        _logger.LogInformation("Executing {Id}: {Command}", command.Id, command.Command);
+
+                    // Linked CTS so we can differentiate shutdown vs per-job timeout.
+                    using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    if(command.MaxRuntimeMinutes is int maxMin && maxMin > 0)
+                        cts.CancelAfter(TimeSpan.FromMinutes(maxMin));
+
+                    var psi = new ProcessStartInfo("cmd.exe")
                     {
+                        Arguments = $"/c {command.Command}",
+                        RedirectStandardOutput = command.CaptureOutput,
+                        RedirectStandardError = command.CaptureOutput,
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    };
+
+                    using var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
+                    if(!process.Start())
+                        throw new InvalidOperationException($"Failed to start process for {command.Id}");
+
+                    // If the host is shutting down, be nice to the child process.
+                    using var shutdownKiller = ct.Register(
+                        () =>
+                        {
+                            try
+                            {
+                                if(!process.HasExited)
+                                    process.Kill(entireProcessTree: true);
+                            } catch
+                            {
+                            }
+                        });
+
+                    Task<string> readStdOut = command.CaptureOutput
+                        ? process.StandardOutput.ReadToEndAsync()
+                        : Task.FromResult<string>(null);
+                    Task<string> readStdErr = command.CaptureOutput
+                        ? process.StandardError.ReadToEndAsync()
+                        : Task.FromResult<string>(null);
+
+                    try
+                    {
+                        // Await exit; this may be canceled by timeout (cts.CancelAfter) or service shutdown (ct).
+                        await process.WaitForExitAsync(cts.Token);
+                    } catch(OperationCanceledException) when (ct.IsCancellationRequested)
+                    {
+                        // Service is stopping: treat as normal (no error / no timeout warning).
                         try
                         {
                             if(!process.HasExited)
@@ -374,30 +397,50 @@ namespace RunCommandsService
                         } catch
                         {
                         }
-                    });
+                        _logger.LogInformation("Execution cancelled (shutdown) for {Id}", command.Id);
 
-                Task<string> readStdOut = command.CaptureOutput
-                    ? process.StandardOutput.ReadToEndAsync()
-                    : Task.FromResult<string>(null);
-                Task<string> readStdErr = command.CaptureOutput
-                    ? process.StandardError.ReadToEndAsync()
-                    : Task.FromResult<string>(null);
-
-                try
-                {
-                    // Await exit; this may be canceled by timeout (cts.CancelAfter) or service shutdown (ct).
-                    await process.WaitForExitAsync(cts.Token);
-                } catch(OperationCanceledException) when (ct.IsCancellationRequested)
-                {
-                    // Service is stopping: treat as normal (no error / no timeout warning).
-                    try
+                        _monitor.Record(
+                            new ExecutionEvent
+                            {
+                                CommandId = command.Id,
+                                Command = command.Command,
+                                StartUtc = start,
+                                EndUtc = DateTime.UtcNow,
+                                ExitCode = null,
+                                Success = true, // don't count as a failure
+                                Error = null
+                            });
+                        return; // don't continue to output handling
+                    } catch(OperationCanceledException)
                     {
-                        if(!process.HasExited)
+                        // Per-job timeout
+                        try
+                        {
                             process.Kill(entireProcessTree: true);
-                    } catch
-                    {
+                            _logger.LogWarning("Process {Id} killed due to timeout", command.Id);
+                        } catch(Exception killEx)
+                        {
+                            _logger.LogError(killEx, "Failed to kill timed out process for {Id}", command.Id);
+                        }
+                        await process.WaitForExitAsync(); // ensure it fully exits before we read outputs
                     }
-                    _logger.LogInformation("Execution cancelled (shutdown) for {Id}", command.Id);
+
+                    var output = await readStdOut;
+                    var error = await readStdErr;
+                    var exitCode = process.HasExited ? process.ExitCode : (int?)null;
+
+                    if(command.CaptureOutput && !string.IsNullOrWhiteSpace(output))
+                        _logger.LogInformation("Output {Id}:\n{Output}", command.Id, output);
+
+                    if(command.CaptureOutput && !string.IsNullOrWhiteSpace(error))
+                        _logger.LogError("Errors {Id}:\n{Error}", command.Id, error);
+
+                    // Success rules:
+                    // - if we captured output and stderr has content → mark as failure
+                    // - otherwise rely on exit code 0
+                var success = (exitCode ?? -1) == 0;
+                    if(command.CaptureOutput && !string.IsNullOrWhiteSpace(error))
+                        success = false;
 
                     _monitor.Record(
                         new ExecutionEvent
@@ -406,101 +449,69 @@ namespace RunCommandsService
                             Command = command.Command,
                             StartUtc = start,
                             EndUtc = DateTime.UtcNow,
+                            ExitCode = exitCode,
+                            Success = success,
+                            Error =
+                                command.CaptureOutput
+                                        ? (string.IsNullOrWhiteSpace(error) ? null : error)
+                                        : ((exitCode ?? -1) == 0 ? null : $"ExitCode={exitCode}")
+                        });
+                } catch(OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    // Catch any late shutdown cancellations outside WaitForExitAsync
+                    _logger.LogInformation("Execution cancelled (shutdown) for {Id}", command.Id);
+                    _monitor.Record(
+                        new ExecutionEvent
+                        {
+                            CommandId = command.Id,
+                            Command = command.Command,
+                            StartUtc = start,
+                            EndUtc = DateTime.UtcNow,
                             ExitCode = null,
-                            Success = true, // don't count as a failure
+                            Success = true,
                             Error = null
                         });
-                    return; // don't continue to output handling
-                } catch(OperationCanceledException)
+                } catch(TaskCanceledException) when (ct.IsCancellationRequested)
                 {
-                    // Per-job timeout
-                    try
-                    {
-                        process.Kill(entireProcessTree: true);
-                        _logger.LogWarning("Process {Id} killed due to timeout", command.Id);
-                    } catch(Exception killEx)
-                    {
-                        _logger.LogError(killEx, "Failed to kill timed out process for {Id}", command.Id);
-                    }
-                    await process.WaitForExitAsync(); // ensure it fully exits before we read outputs
+                    _logger.LogInformation("Execution task cancelled (shutdown) for {Id}", command.Id);
+                    _monitor.Record(
+                        new ExecutionEvent
+                        {
+                            CommandId = command.Id,
+                            Command = command.Command,
+                            StartUtc = start,
+                            EndUtc = DateTime.UtcNow,
+                            ExitCode = null,
+                            Success = true,
+                            Error = null
+                        });
+                } catch(Exception ex)
+                {
+                    _logger.LogError(ex, "Error executing {Id}", command.Id);
+                    _monitor.Record(
+                        new ExecutionEvent
+                        {
+                            CommandId = command.Id,
+                            Command = command.Command,
+                            StartUtc = start,
+                            EndUtc = DateTime.UtcNow,
+                            ExitCode = null,
+                            Success = false,
+                            Error = ex.ToString()
+                        });
                 }
-
-                var output = await readStdOut;
-                var error = await readStdErr;
-                var exitCode = process.HasExited ? process.ExitCode : (int?)null;
-
-                if(command.CaptureOutput && !string.IsNullOrWhiteSpace(output))
-                    _logger.LogInformation("Output {Id}:\n{Output}", command.Id, output);
-
-                if(command.CaptureOutput && !string.IsNullOrWhiteSpace(error))
-                    _logger.LogError("Errors {Id}:\n{Error}", command.Id, error);
-
-                // Success rules:
-                // - if we captured output and stderr has content → mark as failure
-                // - otherwise rely on exit code 0
-                var success = (exitCode ?? -1) == 0;
-                if(command.CaptureOutput && !string.IsNullOrWhiteSpace(error))
-                    success = false;
-
-                _monitor.Record(
-                    new ExecutionEvent
-                    {
-                        CommandId = command.Id,
-                        Command = command.Command,
-                        StartUtc = start,
-                        EndUtc = DateTime.UtcNow,
-                        ExitCode = exitCode,
-                        Success = success,
-                        Error =
-                            command.CaptureOutput
-                                    ? (string.IsNullOrWhiteSpace(error) ? null : error)
-                                    : ((exitCode ?? -1) == 0 ? null : $"ExitCode={exitCode}")
-                    });
-            } catch(OperationCanceledException) when (ct.IsCancellationRequested)
+            }
+            finally
             {
-                // Catch any late shutdown cancellations outside WaitForExitAsync
-                _logger.LogInformation("Execution cancelled (shutdown) for {Id}", command.Id);
-                _monitor.Record(
-                    new ExecutionEvent
-                    {
-                        CommandId = command.Id,
-                        Command = command.Command,
-                        StartUtc = start,
-                        EndUtc = DateTime.UtcNow,
-                        ExitCode = null,
-                        Success = true,
-                        Error = null
-                    });
-            } catch(TaskCanceledException) when (ct.IsCancellationRequested)
-            {
-                _logger.LogInformation("Execution task cancelled (shutdown) for {Id}", command.Id);
-                _monitor.Record(
-                    new ExecutionEvent
-                    {
-                        CommandId = command.Id,
-                        Command = command.Command,
-                        StartUtc = start,
-                        EndUtc = DateTime.UtcNow,
-                        ExitCode = null,
-                        Success = true,
-                        Error = null
-                    });
-            } catch(Exception ex)
-            {
-                _logger.LogError(ex, "Error executing {Id}", command.Id);
-                _monitor.Record(
-                    new ExecutionEvent
-                    {
-                        CommandId = command.Id,
-                        Command = command.Command,
-                        StartUtc = start,
-                        EndUtc = DateTime.UtcNow,
-                        ExitCode = null,
-                        Success = false,
-                        Error = ex.ToString()
-                    });
+                try
+                {
+                    _parallelism.Release();
+                } catch
+                {
+                }
             }
         }
+
 
         public override async Task StopAsync(CancellationToken cancellationToken)
         {

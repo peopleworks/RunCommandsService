@@ -1,0 +1,4 @@
+Severity	Code	Description	Project	File	Line	Suppression State	Details
+Error (active)	CS1513	} expected	RunCommandsService	C:\Proyecto\RunCommandsService\CommandExecutorService.cs	527		
+Error (active)	CS1524	Expected catch or finally	RunCommandsService	C:\Proyecto\RunCommandsService\CommandExecutorService.cs	527		
+	

@@ -14,7 +14,7 @@ public class FileLogger : ILogger
 
     public IDisposable BeginScope<TState>(TState state) => null;
 
-    public bool IsEnabled(LogLevel logLevel) => true;
+    public bool IsEnabled(LogLevel logLevel) => logLevel >= _options.MinLevel;
 
     public void Log<TState>(
         LogLevel logLevel,
@@ -30,6 +30,21 @@ public class FileLogger : ILogger
         Directory.CreateDirectory(logDirectory);
 
         var logFile = Path.Combine(logDirectory, $"log_{DateTime.Now:yyyy-MM-dd}.txt");
+
+        // Rotate by size if needed
+        if(_options.FileSizeLimit > 0 && File.Exists(logFile))
+        {
+            try
+            {
+                var fi = new FileInfo(logFile);
+                if(fi.Length >= _options.FileSizeLimit)
+                {
+                    var rolled = Path.Combine(logDirectory, $"log_{DateTime.Now:yyyy-MM-dd}_{DateTime.Now:HHmmss}.txt");
+                    File.Move(logFile, rolled, overwrite: true);
+                }
+            }
+            catch { /* ignore rotation errors */ }
+        }
         var formattedMessage = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} [{logLevel}] {formatter(state, exception)}";
         if(exception != null)
         {
@@ -49,7 +64,7 @@ public class FileLogger : ILogger
     {
         var files = Directory.GetFiles(logDirectory, "log_*.txt")
             .Select(f => new FileInfo(f))
-            .Where(f => f.CreationTime < DateTime.Now.AddDays(-_options.RetainDays));
+            .Where(f => f.LastWriteTime < DateTime.Now.AddDays(-_options.RetainDays));
 
         foreach(var file in files)
         {
@@ -70,6 +85,8 @@ public class FileLoggerOptions
     public long FileSizeLimit { get; set; }
 
     public int RetainDays { get; set; }
+
+    public LogLevel MinLevel { get; set; } = LogLevel.Information;
 }
 
 public class FileLoggerProvider : ILoggerProvider

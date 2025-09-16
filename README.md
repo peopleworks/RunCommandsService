@@ -8,7 +8,7 @@
 * alerts/hooks (optional),
 * and a simple JSON config with hot-reload.
 
-> **New in v2.5:** fully responsive dashboard (no horizontal scrolling), visible app version, reliable time-zone math (DST safe), cron preview that matches runtime, raw JSON toggle, and safer error handling for bad cron/disabled jobs.
+> **New in v2.6:** edge-to-edge dashboard layout that uses the full viewport, auto-fit KPI cards, mobile-first tables that wrap long values, and safer Windows-service hosting defaults.
 
 ---
 
@@ -59,7 +59,7 @@ flowchart TB
 ## 📋 Prerequisites
 
 - Windows OS
-- .NET 6.0 or later
+- .NET 9.0 (build target)
 - Administrative privileges for service installation
 
 ## 🚀 Installation
@@ -546,7 +546,14 @@ processes are **killed cleanly** on timeout **or** shutdown.
 
 ## Changelog
 
-##  ✅ Dashboard (v2.5)
+## 🌐 What’s new (v2.6)
+
+* **Edge-to-edge dashboard layout** — wrappers now use 95% of the viewport width with responsive padding, eliminating wasted gutters on wide screens.
+* **Adaptive KPI grid** — cards auto-fit via CSS so all stats remain visible on tablets and phones with no horizontal scroll.
+* **Readable tables on mobile** — table cells wrap cron/time-zone text while keeping ID columns monospace; the toolbar stacks vertically with a fluid search box.
+* **Safer Windows service integration** — Program.cs aliases `WindowsServiceHelpers` to avoid naming conflicts with `Microsoft.Extensions.Hosting.WindowsServices`.
+
+## ✅ What’s new (v2.5)
 
 * **Responsive layout** — no page-level horizontal scrolling. Cells ellipsize, sections scroll within themselves.
 * **Version chip** — visible at the top (e.g., `v2.4.0+…`) so testers know what’s deployed.
@@ -614,4 +621,3 @@ processes are **killed cleanly** on timeout **or** shutdown.
 - **Runtime Limits** — per-job `MaxRuntimeMinutes` auto‑kills hung processes.
 - **Precise Scheduler** — uses Cronos to compute the next exact occurrence and prevent duplicate triggers.
 - **Hot‑reload** — changes to `appsettings.json` are picked up without restarting the service.
-
