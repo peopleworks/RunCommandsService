@@ -8,7 +8,12 @@
 * alerts/hooks (optional),
 * and a simple JSON config with hot-reload.
 
-> **New in v2.6:** edge-to-edge dashboard layout that uses the full viewport, auto-fit KPI cards, mobile-first tables that wrap long values, and safer Windows-service hosting defaults.
+> **New in v2.7:** dashboard timestamps now respect the viewer's local time with wrapped cells, and failed jobs always log a summary even when CaptureOutput=false.
+> **Previously in v2.6:** edge-to-edge dashboard layout that uses the full viewport, auto-fit KPI cards, mobile-first tables that wrap long values, and safer Windows-service hosting defaults.
+
+## What's New
+- **v2.7:** Local-time dashboard everywhere plus guaranteed failure logging regardless of CaptureOutput.
+- **v2.6:** Edge-to-edge layout, adaptive KPIs, mobile-friendly tables, safer Windows service defaults.
 
 ---
 
@@ -50,6 +55,7 @@ flowchart TB
 ## ✨ Features
 
 - **Cron-based Scheduling**: Use standard cron expressions for flexible command scheduling
+- **Local-first Dashboard (new in v2.7)**: UI renders all timestamps in the browser's local time while keeping UTC hints in tooltips
 - **Hot Configuration Reload**: Update commands without service restart
 - **Comprehensive Logging**: Detailed logs with automatic rotation
 - **Windows Service Integration**: Proper Windows service lifecycle management
@@ -124,6 +130,7 @@ graph LR
 ## 📝 Logging
 
 Logs are stored in the `Logs` directory with the following features:
+- Guaranteed failure summaries even when job output is not captured (v2.7)
 - Daily log files (`log_yyyy-MM-dd.txt`)
 - Automatic rotation after 30 days
 - Size limit of 10MB per file
@@ -545,6 +552,12 @@ processes are **killed cleanly** on timeout **or** shutdown.
 - `DELETE /api/jobs/{id}`
 
 ## Changelog
+
+## 🐛 What's new (v2.7)
+
+* **Local-time dashboard timestamps** - Recent executions, schedule tables, and status chips now render in the viewer's local time while retaining UTC hints on hover.
+* **Wrapped monospace date columns** - `.mono wrap` styling keeps long timestamps readable without horizontal scrolling in jobs and executions.
+* **Guaranteed failure summaries** - Every unsuccessful run writes a concise error log even when `CaptureOutput=false`, so failures never go unnoticed.
 
 ## 🌐 What’s new (v2.6)
 

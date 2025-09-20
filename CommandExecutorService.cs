@@ -1,4 +1,4 @@
-﻿using Cronos;
+using Cronos;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -436,11 +436,31 @@ namespace RunCommandsService
                         _logger.LogError("Errors {Id}:\n{Error}", command.Id, error);
 
                     // Success rules:
-                    // - if we captured output and stderr has content → mark as failure
+                    // - if we captured output and stderr has content -> mark as failure
                     // - otherwise rely on exit code 0
-                var success = (exitCode ?? -1) == 0;
+                    var success = (exitCode ?? -1) == 0;
                     if(command.CaptureOutput && !string.IsNullOrWhiteSpace(error))
                         success = false;
+
+                    if(!success)
+                    {
+                        var exitCodeLogValue = exitCode.HasValue ? exitCode.Value.ToString() : "null";
+                        if(command.CaptureOutput && !string.IsNullOrWhiteSpace(error))
+                        {
+                            _logger.LogError(
+                                "Execution of {Id} failed with exit code {ExitCode}. See stderr output above.",
+                                command.Id,
+                                exitCodeLogValue);
+                        }
+                        else
+                        {
+                            _logger.LogError(
+                                "Execution of {Id} failed with exit code {ExitCode}. CaptureOutput={CaptureOutput}",
+                                command.Id,
+                                exitCodeLogValue,
+                                command.CaptureOutput);
+                        }
+                    }
 
                     _monitor.Record(
                         new ExecutionEvent
