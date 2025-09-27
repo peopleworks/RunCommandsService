@@ -512,26 +512,28 @@ Message:  ${CustomMessage}";
             try
             {
                 var path = ctx.Request.Url.AbsolutePath;
+                var pathLower = (path ?? string.Empty).ToLowerInvariant();
                 if(path == "/" || path == "/dashboard")
                 {
                     ServeDashboard(ctx);
-                } else if(path == "/api/health")
+                } else if(pathLower == "/api/health")
                 {
                     var payload = _monitor.GetHealthPayload();
                     WriteJson(ctx, payload, 200);
-                } else if(path == "/api/logs")
+                } else if(pathLower == "/api/logs")
                 {
                     ServeLogsTail(ctx);
-                } else if(path == "/api/jobs" && ctx.Request.HttpMethod == "GET")
+                } else if(pathLower == "/api/jobs" && ctx.Request.HttpMethod == "GET")
                 {
                     var jobs = ReadJobsRaw();
                     WriteJson(ctx, new { ok = true, jobs }, 200);
-                } else if(path == "/api/jobs/validateCron" && ctx.Request.HttpMethod == "POST")
+                } else if((pathLower == "/api/jobs/validatecron" || pathLower == "/api/jobs/validatecron/" || pathLower == "/api/jobs/validatecron") && ctx.Request.HttpMethod == "POST"
+                    || (path == "/api/jobs/validateCron" && ctx.Request.HttpMethod == "POST"))
                 {
                     var body = ReadBody(ctx);
                     var dto = JsonSerializer.Deserialize<CronPreviewReq>(body);
                     ValidateCron(ctx, dto);
-                } else if(path == "/api/jobs" && ctx.Request.HttpMethod == "POST")
+                } else if(pathLower == "/api/jobs" && ctx.Request.HttpMethod == "POST")
                 {
                     if(!IsAuthorized(ctx))
                     {
@@ -542,7 +544,7 @@ Message:  ${CustomMessage}";
                     var body = ReadBody(ctx);
                     var job = JsonSerializer.Deserialize<Dictionary<string, object>>(body);
                     CreateJob(ctx, job);
-                } else if(path.StartsWith("/api/jobs/") &&
+                } else if(pathLower.StartsWith("/api/jobs/") &&
                     (ctx.Request.HttpMethod == "PUT" || ctx.Request.HttpMethod == "DELETE"))
                 {
                     if(!IsAuthorized(ctx))
@@ -719,21 +721,13 @@ Message:  ${CustomMessage}";
 
                 for(int i = 0; i < 5; i++)
                 {
-                    // Same shim as the scheduler:
-                    var cursorLocal = TimeZoneInfo.ConvertTimeFromUtc(cursorUtc, tz);
-                    var fakeUtcCursor = DateTime.SpecifyKind(cursorLocal, DateTimeKind.Utc);
-
-                    var nextLocalFakeUtc = cron.GetNextOccurrence(fakeUtcCursor);
-                    if(nextLocalFakeUtc == null)
+                    // Cronos expects UTC base time when a time zone is provided
+                    var nextUtc = cron.GetNextOccurrence(DateTime.SpecifyKind(cursorUtc, DateTimeKind.Utc), tz);
+                    if(nextUtc == null)
                         break;
 
-                    var nextLocal = DateTime.SpecifyKind(nextLocalFakeUtc.Value, DateTimeKind.Unspecified);
-                    var nextUtc = ConvertLocalToUtc(nextLocal, tz);
-                    results.Add(nextUtc.ToString("o"));
-
-                    // Advance local cursor by 1s, then convert back to UTC for the next iteration
-                    var nextCursorLocal = nextLocal.AddSeconds(1);
-                    cursorUtc = ConvertLocalToUtc(nextCursorLocal, tz);
+                    results.Add(nextUtc.Value.ToString("o"));
+                    cursorUtc = nextUtc.Value.AddSeconds(1);
                 }
 
                 WriteJson(ctx, new { ok = true, timeZone = tz.Id, next = results }, 200);

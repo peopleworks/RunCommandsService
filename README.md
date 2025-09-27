@@ -8,10 +8,15 @@
 * alerts/hooks (optional),
 * and a simple JSON config with hot-reload.
 
+> **New in v2.8:** Correct time zone/DST scheduling across machine vs. job TZ (Cronos with UTC base + job TZ), non‑blocking scheduler loop, and case‑insensitive `validateCron` endpoint alias.
 > **New in v2.7:** dashboard timestamps now respect the viewer's local time with wrapped cells, and failed jobs always log a summary even when CaptureOutput=false.
 > **Previously in v2.6:** edge-to-edge dashboard layout that uses the full viewport, auto-fit KPI cards, mobile-first tables that wrap long values, and safer Windows-service hosting defaults.
 
 ## What's New
+- **v2.8:**
+  - Fixed next-run calculations when machine TZ differs from job `TimeZone` and across DST transitions by using Cronos’ time zone API with a UTC base time.
+  - Scheduler loop no longer blocks while a job executes; due jobs are dispatched in the background with concurrency limits respected.
+  - `POST /api/jobs/validateCron` now matches runtime calculations; also supports the lowercase alias `/api/jobs/validatecron`.
 - **v2.7:** Local-time dashboard everywhere plus guaranteed failure logging regardless of CaptureOutput.
 - **v2.6:** Edge-to-edge layout, adaptive KPIs, mobile-friendly tables, safer Windows service defaults.
 
@@ -70,19 +75,109 @@ flowchart TB
 
 ## 🚀 Installation
 
-1. **Build the Service**
+Option A — Debug run (console)
 ```powershell
-dotnet build -c Release
+dotnet build -c Debug
+dotnet run --project .\RunCommandsService\RunCommandsService.csproj
 ```
 
-2. **Install the Service**
+Option B — Install as a Windows Service (recommended)
+
+1) Publish binaries
+```powershell
+dotnet publish .\RunCommandsService\RunCommandsService.csproj -c Release -o C:\Apps\RunCommandsService
+```
+
+2) Reserve HTTP prefix (run PowerShell as Administrator)
+
+- For local debug under your current user:
+```powershell
+netsh http delete urlacl url=http://localhost:5058/
+netsh http add urlacl url=http://localhost:5058/ user="%USERDOMAIN%\%USERNAME%"
+```
+
+- For the Windows service running as LocalSystem:
+```powershell
+netsh http add urlacl url=http://+:5058/ user="NT AUTHORITY\SYSTEM"
+```
+
+3) Install service
+
+- Using `sc.exe`:
+```powershell
+sc.exe create "ScheduledCommandExecutor" binPath= "C:\Apps\RunCommandsService\RunCommandsService.exe" start= auto
+sc.exe start "ScheduledCommandExecutor"
+```
+
+- Or using PowerShell `New-Service`:
 ```powershell
 New-Service -Name "ScheduledCommandExecutor" `
-            -BinaryPathName "path\to\your\service.exe" `
-            -DisplayName "Scheduled Command Executor Service" `
-            -Description "Service that executes scheduled commands based on cron expressions defined in appsettings.json" `
+            -BinaryPathName "C:\Apps\RunCommandsService\RunCommandsService.exe" `
+            -DisplayName "Scheduled Command Executor" `
+            -Description "Executes scheduled commands from appsettings.json" `
             -StartupType Automatic
+Start-Service "ScheduledCommandExecutor"
 ```
+
+4) Verify API and dashboard
+```powershell
+curl http://localhost:5058/api/health
+start http://localhost:5058/
+```
+
+Notes
+- Ensure `Monitoring:HttpPrefixes` contains `http://localhost:5058/` (with trailing slash) to match the reserved URL.
+- To update: `sc.exe stop ScheduledCommandExecutor`, replace files in `C:\Apps\RunCommandsService`, then `sc.exe start ScheduledCommandExecutor`.
+- To uninstall: `sc.exe stop ScheduledCommandExecutor` (if running) and `sc.exe delete ScheduledCommandExecutor`.
+
+## ✨ Features
+
+- **Cron-based Scheduling**: Use standard cron expressions for flexible command scheduling
+- **Local-first Dashboard (new in v2.7)**: UI renders all timestamps in the browser's local time while keeping UTC hints in tooltips
+- **Hot Configuration Reload**: Update commands without service restart
+- **Comprehensive Logging**: Detailed logs with automatic rotation
+- **Windows Service Integration**: Proper Windows service lifecycle management
+- **Error Handling**: Robust error handling with detailed logging
+- **Service Description**: Clear service description in Windows Services manager
+
+## 📋 Prerequisites
+
+- Windows OS
+- .NET 9.0 (build target)
+- Administrative privileges for service installation
+
+
+## ✨ Features
+
+- **Cron-based Scheduling**: Use standard cron expressions for flexible command scheduling
+- **Local-first Dashboard (new in v2.7)**: UI renders all timestamps in the browser's local time while keeping UTC hints in tooltips
+- **Hot Configuration Reload**: Update commands without service restart
+- **Comprehensive Logging**: Detailed logs with automatic rotation
+- **Windows Service Integration**: Proper Windows service lifecycle management
+- **Error Handling**: Robust error handling with detailed logging
+- **Service Description**: Clear service description in Windows Services manager
+
+## 📋 Prerequisites
+
+- Windows OS
+- .NET 9.0 (build target)
+- Administrative privileges for service installation
+
+## ✨ Features
+
+- **Cron-based Scheduling**: Use standard cron expressions for flexible command scheduling
+- **Local-first Dashboard (new in v2.7)**: UI renders all timestamps in the browser's local time while keeping UTC hints in tooltips
+- **Hot Configuration Reload**: Update commands without service restart
+- **Comprehensive Logging**: Detailed logs with automatic rotation
+- **Windows Service Integration**: Proper Windows service lifecycle management
+- **Error Handling**: Robust error handling with detailed logging
+- **Service Description**: Clear service description in Windows Services manager
+
+## 📋 Prerequisites
+
+- Windows OS
+- .NET 9.0 (build target)
+- Administrative privileges for service installation
 
 ## ⚙️ Configuration
 
@@ -425,11 +520,13 @@ Write endpoints require a header **`X-Admin-Key`**. Set it in your config:
 ```
 
 ### APIs
-- `GET  /api/jobs` – list current jobs (raw from config)
-- `POST /api/jobs/validateCron` – body: `{ "cron": "*/5 * * * *", "timeZone": "Eastern Standard Time" }`
-- `POST /api/jobs` – create job (body is the job JSON)
-- `PUT  /api/jobs/{id}` – update by id
-- `DELETE /api/jobs/{id}` – delete by id
+- `GET  /api/jobs` - list current jobs (raw from config)
+- `POST /api/jobs/validateCron` - body: `{ "cron": "*/5 * * * *", "timeZone": "Eastern Standard Time" }`
+- `POST /api/jobs` - create job (body is the job JSON)
+- `PUT  /api/jobs/{id}` - update by id
+- `DELETE /api/jobs/{id}` - delete by id
+
+Aliases: `POST /api/jobs/validatecron` (lowercase) is also accepted.
 
 All write calls must include the header: `X-Admin-Key: <your-key>`.
 
@@ -553,6 +650,15 @@ processes are **killed cleanly** on timeout **or** shutdown.
 
 ## Changelog
 
+## 🐛 What's new (v2.8)
+
+* Time zone correctness — Next-run is computed with Cronos using a UTC base time plus the job's `TimeZone`. Fixes wrong schedules when the machine TZ differs from the job TZ and across DST transitions.
+* Loop resilience — The scheduler no longer blocks on job execution. Jobs are dispatched in the background; concurrency keys and `MaxParallelism` still apply.
+* Cron preview parity — `POST /api/jobs/validateCron` uses the same logic as runtime and accepts lowercase alias `/api/jobs/validatecron`.
+* Quick preview via curl:
+  - `curl -H "Content-Type: application/json" -d '{ "cron":"*/5 * * * *", "timeZone":"Eastern Standard Time" }' http://localhost:5058/api/jobs/validateCron`
+  - `curl -H "Content-Type: application/json" -d '{ "cron":"40 23 * * 1-5", "timeZone":"America/Santo_Domingo" }' http://localhost:5058/api/jobs/validatecron`
+
 ## 🐛 What's new (v2.7)
 
 * **Local-time dashboard timestamps** - Recent executions, schedule tables, and status chips now render in the viewer's local time while retaining UTC hints on hover.
@@ -634,3 +740,4 @@ processes are **killed cleanly** on timeout **or** shutdown.
 - **Runtime Limits** — per-job `MaxRuntimeMinutes` auto‑kills hung processes.
 - **Precise Scheduler** — uses Cronos to compute the next exact occurrence and prevent duplicate triggers.
 - **Hot‑reload** — changes to `appsettings.json` are picked up without restarting the service.
+

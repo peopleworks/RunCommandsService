@@ -3,7 +3,7 @@
 
 Operational guide for running, extending, and automating **Scheduled Command Executor** with an LLM from the command line.
 
-> Latest release: **v2.6** — edge-to-edge dashboard layout, adaptive KPI grid, mobile-readable tables, and service-host alias safety.
+> Latest release: **v2.8** — correct TZ/DST scheduling across machine vs. job TZ (Cronos with UTC base + job TZ), non-blocking scheduler loop, and `validateCron` lowercase alias.
 
 > Target stack: **.NET 9.0**, Windows (service or console), `Cronos` for cron parsing, `HttpListener` for the dashboard/API.
 
@@ -46,7 +46,7 @@ Define these “personas” in your Codex setup; pick one per task.
 Act as the Core Engineer for Scheduled Command Executor. Constraints:
 - .NET 9.0 BackgroundService on Windows.
 - Use Cronos; handle invalid cron without throwing; log once per bad job; skip disabled jobs.
-- Compute next-run in job’s local wall-clock and convert to UTC (DST safe).
+- Compute next‑run with Cronos using UTC base + job TimeZone (DST safe). Implementation note: call `cron.GetNextOccurrence(DateTime.UtcNow, tz)`. Do NOT pass local DateTime to Cronos.
 - Concurrency: TryAcquireAsync + Skip (lock) with 0ms duration.
 - Per-job timeout kills process tree; treat service shutdown as success/cancel, not a failure.
 Task: <describe the exact change here>
@@ -237,13 +237,15 @@ curl http://localhost:5058/api/health
 curl "http://localhost:5058/api/logs?tailKb=256"
 ```
 
-### `POST /api/jobs/validateCron`
+### `POST /api/jobs/validateCron` (alias: `/api/jobs/validatecron`)
 
 * Body: `{ "cron": "40 23 * * 1-5", "timeZone": "Eastern Standard Time" }`
 * Result: `{ "ok": true, "timeZone": "Eastern Standard Time", "next": [ "2025-...", ... ] }`
 
 ```powershell
 curl -H "Content-Type: application/json" -d '{ "cron":"*/5 * * * *", "timeZone":"UTC" }' http://localhost:5058/api/jobs/validateCron
+# also works (lowercase alias)
+curl -H "Content-Type: application/json" -d '{ "cron":"40 23 * * 1-5", "timeZone":"America/Santo_Domingo" }' http://localhost:5058/api/jobs/validatecron
 ```
 
 ### `POST /api/jobs`
@@ -261,7 +263,9 @@ curl -H "Content-Type: application/json" -H "X-Admin-Key: CHANGE-ME" -d $body ht
 ## 7) Cron & Time Zones (runtime contract)
 
 * Cron is **5 fields**: `minute hour day month dayOfWeek` (e.g., `*/5 * * * *`, `0 9 * * *`, `40 23 * * 1-5`).
-* Next run computed on the job’s **local wall clock**, then converted to **UTC**. DST transitions handled; invalid/ambiguous local times are normalized.
+* Next run is computed with Cronos using a **UTC base time** and the job’s **TimeZone**. Cronos returns a UTC instant that reflects the job’s local wall‑clock (DST‑safe).
+  - Engineering rule: Always call `cron.GetNextOccurrence(DateTime.UtcNow, tz)` (or a UTC cursor) and never pass a local `DateTime` to Cronos. Passing local time will throw and/or mis‑schedule.
+  - When advancing, compute the next occurrence based on the previous due instant + 1s to avoid drift.
 * Invalid `CronExpression` or missing fields:
 
   * Job is **skipped** and a single error is logged:
@@ -269,6 +273,19 @@ curl -H "Content-Type: application/json" -H "X-Admin-Key: CHANGE-ME" -d $body ht
   * Dashboard shows the job; `Next run` empty.
 
 ---
+
+## 13) What’s new v2.8 (for agents)
+
+Core Engineer
+- Use Cronos TZ API with a UTC base: `cron.GetNextOccurrence(nowUtc, tz)`. Do NOT use the old “fake UTC local wall‑clock” shim.
+- Keep the scheduler loop non‑blocking. Dispatch due jobs with `Task.Run` and let `_parallelism` + `ConcurrencyManager` enforce limits.
+- On exceptions inside the loop, log and continue; never let a single failure stall other jobs.
+
+Monitoring / API
+- `POST /api/jobs/validateCron` uses the same TZ logic as the scheduler. Accept `/api/jobs/validatecron` alias.
+
+Docs Agent
+- Update README and changelog when touching time zone or loop behavior. Include curl examples for both endpoints (canonical and alias).
 
 ## 8) Common CLI playbooks (copy/paste prompts for Codex)
 

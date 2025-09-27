@@ -78,25 +78,14 @@ namespace RunCommandsService
         }
 
 
-        // Compute next run in the job's local wall-clock, then convert to real UTC
+        // Compute next run using Cronos with explicit TimeZoneInfo. Base time MUST be UTC per Cronos contract.
         private static DateTime? SafeNextOccurrenceUtc(CronExpression cron, DateTime utcNow, TimeZoneInfo tz)
         {
             try
             {
-                // Convert "now" to the job's local time
-                var nowLocal = TimeZoneInfo.ConvertTimeFromUtc(utcNow, tz);
-
-                // Cronos (UTC-only API here) — use a "fake UTC" cursor that holds local wall-clock
-                var fakeUtcCursor = DateTime.SpecifyKind(nowLocal, DateTimeKind.Utc);
-
-                // Next LOCAL occurrence on that wall-clock timeline
-                var nextLocalFakeUtc = cron.GetNextOccurrence(fakeUtcCursor);
-                if(nextLocalFakeUtc == null)
-                    return null;
-
-                // Interpret as local and convert FROM tz TO real UTC
-                var nextLocal = DateTime.SpecifyKind(nextLocalFakeUtc.Value, DateTimeKind.Unspecified);
-                return ConvertLocalToUtc(nextLocal, tz);
+                // Cronos returns UTC when a time zone is provided and base time is UTC
+                var nextUtc = cron.GetNextOccurrence(DateTime.SpecifyKind(utcNow, DateTimeKind.Utc), tz);
+                return nextUtc;
             } catch
             {
                 return null;
@@ -273,7 +262,8 @@ namespace RunCommandsService
                             // Visibility when things “don’t run”
                             _logger.LogDebug("Due @ {Due:o} (now {Now:o}) → launching {Id}", due.Value, nowUtc, cmd.Id);
 
-                            await RunCommandAsync(cmd, stoppingToken);
+                            // Do not block the scheduler loop; fire-and-forget with internal concurrency limits
+                            _ = Task.Run(() => RunCommandAsync(cmd, stoppingToken), stoppingToken);
 
                             // schedule next from the due time (+1s) to avoid drift / skips
                             var next = SafeNextOccurrenceUtc(cmd.Cron, due.Value.AddSeconds(1), TZ(cmd.TimeZone));
