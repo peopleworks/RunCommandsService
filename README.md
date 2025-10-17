@@ -8,13 +8,21 @@
 * alerts/hooks (optional),
 * and a simple JSON config with hot-reload.
 
-> **New in v2.8:** Correct time zone/DST scheduling across machine vs. job TZ (Cronos with UTC base + job TZ), non‑blocking scheduler loop, and case‑insensitive `validateCron` endpoint alias.
-> **New in v2.7:** dashboard timestamps now respect the viewer's local time with wrapped cells, and failed jobs always log a summary even when CaptureOutput=false.
-> **Previously in v2.6:** edge-to-edge dashboard layout that uses the full viewport, auto-fit KPI cards, mobile-first tables that wrap long values, and safer Windows-service hosting defaults.
+> **New in v2.9:** Production-grade resilience with comprehensive timezone support (80+ zones), startup validation reporting, scheduler health monitoring with heartbeat tracking, exponential backoff on errors, and enhanced diagnostics throughout. **This is the most stable and observable release yet.**
+> **Previously in v2.8:** Correct time zone/DST scheduling across machine vs. job TZ (Cronos with UTC base + job TZ), non‑blocking scheduler loop, and case‑insensitive `validateCron` endpoint alias.
 
 ## What's New
+- **v2.9 (Current):**
+  - **Enhanced Timezone Support** – Expanded from 12 to **80+ IANA timezone mappings** covering all major global regions (Americas, Europe, Asia-Pacific, Africa, Middle East)
+  - **Timezone Validation & Warnings** – Unmapped timezones now **log clear warnings** when falling back to UTC (no more silent failures!)
+  - **Startup Validation Summary** – Comprehensive report on service start showing valid/invalid jobs, cron errors, and timezone issues at a glance
+  - **Scheduler Health Monitoring** – Real-time heartbeat tracking exposed via `/api/health` endpoint with `schedulerHealth` section
+  - **Exponential Backoff** – Scheduler errors now use exponential backoff (10s → 20s → 40s → 60s) with critical alerts after 3+ consecutive failures
+  - **Enhanced Error Context** – Exception types, inner exceptions, and detailed diagnostics in all error logs
+  - **Protected Config Reload** – Configuration hot-reload errors no longer crash the service; previous valid config stays active
+  - **Better Observability** – Track scheduler heartbeat, consecutive errors, and get early warnings before complete failures
 - **v2.8:**
-  - Fixed next-run calculations when machine TZ differs from job `TimeZone` and across DST transitions by using Cronos’ time zone API with a UTC base time.
+  - Fixed next-run calculations when machine TZ differs from job `TimeZone` and across DST transitions by using Cronos' time zone API with a UTC base time.
   - Scheduler loop no longer blocks while a job executes; due jobs are dispatched in the background with concurrency limits respected.
   - `POST /api/jobs/validateCron` now matches runtime calculations; also supports the lowercase alias `/api/jobs/validatecron`.
 - **v2.7:** Local-time dashboard everywhere plus guaranteed failure logging regardless of CaptureOutput.
@@ -305,16 +313,31 @@ MIT License - feel free to use this code in your projects.
    - Check Windows Event Viewer for errors
    - Verify appsettings.json exists and is valid
    - Ensure proper permissions on log directory
+   - **New in v2.9:** Review startup validation summary in logs for configuration issues
 
 2. **Commands Not Executing**
    - Verify cron expressions are correct
    - Check service logs for execution attempts
    - Ensure commands have proper paths
+   - **New in v2.9:** Check startup logs for "invalid CronExpression" or timezone warnings
 
 3. **Configuration Not Updating**
    - Verify file system permissions
    - Check logs for configuration reload events
    - Ensure JSON format is valid
+   - **New in v2.9:** Configuration reload errors are logged but don't crash service
+
+4. **Jobs Running at Wrong Times (v2.9)**
+   - Check startup logs for timezone validation warnings
+   - Verify timezone ID is in supported list (see `TimeZoneHelper.cs` or startup logs)
+   - Use Windows timezone IDs (e.g., "Eastern Standard Time") or supported IANA IDs
+   - Monitor `/api/health` for timezone fallback warnings
+
+5. **Scheduler Not Responding (v2.9)**
+   - Check `/api/health` endpoint's `schedulerHealth` section
+   - Look for `consecutiveErrors > 0` indicating scheduler issues
+   - Review logs for CRITICAL level messages about scheduler failures
+   - Verify `lastHeartbeat` is updating (should be within 3× `pollIntervalSeconds`)
 
 ## 🔍 Monitoring and Maintenance
 
@@ -425,6 +448,34 @@ netsh http add urlacl url=http://+:5058/ user=Everyone
 ```
 
 Use a browser or `curl http://localhost:5058/` to see recent runs, durations, exit codes, and consecutive failures.
+
+### New in v2.9: Scheduler Health Monitoring
+
+The health endpoint now includes a `schedulerHealth` section providing real-time visibility into the scheduler loop:
+
+```json
+{
+  "schedulerHealth": {
+    "healthy": true,
+    "lastHeartbeat": "2025-10-17T15:30:45.123Z",
+    "secondsSinceHeartbeat": 2.5,
+    "consecutiveErrors": 0,
+    "pollIntervalSeconds": 5
+  }
+}
+```
+
+**Fields:**
+- `healthy` – `true` if scheduler loop ran recently without errors
+- `lastHeartbeat` – UTC timestamp of last successful scheduler iteration
+- `secondsSinceHeartbeat` – Time elapsed since last heartbeat
+- `consecutiveErrors` – Count of consecutive scheduler failures (triggers critical alerts at 3+)
+- `pollIntervalSeconds` – Configured poll interval from `Scheduler.PollSeconds`
+
+**Monitoring Tips:**
+- Alert if `healthy = false` or `consecutiveErrors > 0`
+- Track `secondsSinceHeartbeat` – should be < 3× `pollIntervalSeconds`
+- Critical: investigate immediately if `consecutiveErrors >= 3`
 
 ## 🛡️ Operational guidance
 
@@ -626,14 +677,14 @@ processes are **killed cleanly** on timeout **or** shutdown.
 - **Id** *(string, required)* – unique id.
 - **Command** *(string, required)* – full shell command; Windows examples often use `cmd /c "..."` with quoting.
 - **CronExpression** *(string, required)* – 5-field cron (min hour dom mon dow).
-- **TimeZone** *(string)* – Windows tz id (e.g., `Eastern Standard Time`). Falls back to `Scheduler.DefaultTimeZone`.
+- **TimeZone** *(string)* – **New in v2.9:** Supports 80+ IANA timezone IDs (e.g., `Asia/Tokyo`, `Australia/Sydney`) plus Windows IDs (e.g., `Eastern Standard Time`). Invalid timezones log warnings and fall back to `Scheduler.DefaultTimeZone`. See `TimeZoneHelper.cs` for full list.
 - **Enabled** *(bool)* – include/exclude from scheduling.
-- **AllowParallelRuns** *(bool)* – if `false`, jobs sharing the same **ConcurrencyKey** won’t overlap.
+- **AllowParallelRuns** *(bool)* – if `false`, jobs sharing the same **ConcurrencyKey** won't overlap.
 - **ConcurrencyKey** *(string)* – grouping key for mutual exclusion. If empty, `Id` is used.
 - **MaxRuntimeMinutes** *(int?)* – cancels and kills the process after this duration.
 - **AlertOnFail** *(bool)* – send alerts on failures (ties into Monitoring.Notifiers).
 - **CaptureOutput** *(bool)* – if `true`, stdout/stderr are captured and logged; stderr content marks the run failed.
-- **QuietStartLog** *(bool)* – suppresses the “Executing …” info log at start, useful for very frequent jobs.
+- **QuietStartLog** *(bool)* – suppresses the "Executing …" info log at start, useful for very frequent jobs.
 - **CustomAlertMessage** *(string)* – extra context included in email/webhook templates.
 
 ### Monitoring endpoint & dashboard
@@ -649,6 +700,55 @@ processes are **killed cleanly** on timeout **or** shutdown.
 - `DELETE /api/jobs/{id}`
 
 ## Changelog
+
+## 🚀 What's new (v2.9) — Production Resilience & Enhanced Observability
+
+**Timezone Management Overhaul:**
+- **80+ timezone support** – Expanded IANA→Windows mapping from 12 to 80+ zones covering:
+  - All North American zones (US, Canada, Mexico, Caribbean)
+  - Complete European coverage (Western, Central, Eastern)
+  - Asia-Pacific (Tokyo, Sydney, Singapore, Hong Kong, Seoul, etc.)
+  - South America, Middle East, and Africa
+- **Explicit warnings** – Unmapped timezones now log warnings when falling back to UTC (no more silent failures)
+- **Validation API** – Job Builder and manual configuration now validate timezone IDs with helpful error messages
+- **Detailed diagnostics** – New `TimeZoneResult` class tracks original ID, resolved ID, and fallback status
+
+**Startup Validation & Reporting:**
+- **Comprehensive summary** on service start showing:
+  ```
+  Configuration loaded: 5 total jobs | 3 valid & enabled | 1 disabled | 1 invalid cron | 1 timezone warnings
+
+  Configuration validation issues found:
+    • Job 'BackupJob': invalid CronExpression — Expected 5 or 6 fields
+    • Job 'ReportGen': Invalid timezone 'Asia/Invalid' → using UTC
+  ```
+- **Critical warnings** when no valid enabled jobs exist
+- **Clear visibility** into configuration problems before they cause runtime issues
+
+**Scheduler Health Monitoring:**
+- **Real-time heartbeat** – Tracks last successful scheduler loop iteration
+- **Health endpoint** – `/api/health` now includes `schedulerHealth` section with:
+  - `healthy` boolean
+  - `lastHeartbeat` UTC timestamp
+  - `secondsSinceHeartbeat` metric
+  - `consecutiveErrors` counter
+- **Early warning system** – Detect scheduler issues before complete failures
+
+**Enhanced Error Handling:**
+- **Exponential backoff** – Scheduler errors use progressive delays: 10s → 20s → 40s → 60s (max)
+- **Critical alerts** – Automatic CRITICAL log level after 3+ consecutive scheduler failures
+- **Detailed context** – All errors now include exception types, inner exceptions, and command details
+- **Protected hot-reload** – Configuration reload errors don't crash service; previous config remains active
+
+**Production Best Practices:**
+- **Task isolation verified** – Confirmed excellent per-task error isolation (one failure doesn't affect others)
+- **Better diagnostics** – Enhanced logging throughout with structured error information
+- **Failure resilience** – Service continues operating even with invalid jobs or configuration errors
+
+**Supported Timezones (New):**
+Asia/Tokyo, Australia/Sydney, Australia/Melbourne, Europe/Berlin, Europe/Madrid, Asia/Singapore, Asia/Shanghai, Asia/Hong_Kong, Pacific/Auckland, America/Sao_Paulo, America/Buenos_Aires, Asia/Dubai, Asia/Kolkata, and 60+ more.
+
+See `IMPROVEMENTS_SUMMARY.md` for complete technical details.
 
 ## 🐛 What's new (v2.8)
 

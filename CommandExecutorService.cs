@@ -33,6 +33,11 @@ namespace RunCommandsService
 
         private DateTime _lastReload = DateTime.MinValue;
 
+        // Scheduler health tracking
+        private DateTime _lastSchedulerHeartbeat = DateTime.MinValue;
+        private int _schedulerErrorCount = 0;
+        private readonly object _healthLock = new object();
+
 
         public CommandExecutorService(
             IConfiguration configuration,
@@ -48,6 +53,12 @@ namespace RunCommandsService
             _logger = logger;
 
             _parallelism = new SemaphoreSlim(Math.Max(1, _schedOptions.MaxParallelism));
+
+            // Initialize TimeZoneHelper with logger for diagnostics
+            TimeZoneHelper.Initialize(logger);
+
+            // Register scheduler health provider with monitor
+            _monitor.SetSchedulerHealthProvider(GetSchedulerHealth);
 
             LoadCommands();
             SetupConfigurationWatcher();
@@ -153,6 +164,11 @@ namespace RunCommandsService
                     new List<ScheduledCommand>();
 
                 var now = DateTime.UtcNow;
+                var validJobs = 0;
+                var invalidCronJobs = 0;
+                var invalidTimezoneJobs = 0;
+                var disabledJobs = 0;
+                var validationIssues = new List<string>();
 
                 foreach(var c in _commands)
                 {
@@ -165,6 +181,14 @@ namespace RunCommandsService
                     // Allow logging again if a previously-bad cron was fixed
                     _invalidScheduleLogged.Remove(c.Id);
 
+                    // Validate timezone with detailed result
+                    var tzResult = TimeZoneHelper.FindTimeZoneWithResult(c.TimeZone);
+                    if(tzResult.FellBackToUtc && c.Enabled)
+                    {
+                        invalidTimezoneJobs++;
+                        validationIssues.Add($"  • Job '{c.Id}': Invalid timezone '{tzResult.OriginalId}' → using UTC");
+                    }
+
                     // ---- FIX: declare & init before the condition ----
                     CronExpression cron = null;
                     string cronErr = null;
@@ -175,6 +199,11 @@ namespace RunCommandsService
                     {
                         c.Cron = cron;
                         _nextRunUtc[c.Id] = SafeNextOccurrenceUtc(cron, now, TZ(c.TimeZone));
+
+                        if(c.Enabled)
+                            validJobs++;
+                        else
+                            disabledJobs++;
                     } else
                     {
                         c.Cron = null;
@@ -183,15 +212,44 @@ namespace RunCommandsService
                         // Only complain for enabled jobs
                         if(c.Enabled)
                         {
+                            invalidCronJobs++;
                             var err = !hasCron ? "missing CronExpression" : $"invalid CronExpression — {cronErr}";
                             if(_invalidScheduleLogged.Add(c.Id))
                                 _logger.LogError("Job {Id}: {Error}. Job will be skipped until fixed.", c.Id, err);
+
+                            validationIssues.Add($"  • Job '{c.Id}': {err}");
+                        }
+                        else
+                        {
+                            disabledJobs++;
                         }
                     }
                 }
 
                 RefreshMonitorSnapshot();
-                _logger.LogInformation("Loaded {Count} commands from configuration", _commands.Count);
+
+                // Log comprehensive startup summary
+                _logger.LogInformation(
+                    "Configuration loaded: {TotalJobs} total jobs | {ValidJobs} valid & enabled | {DisabledJobs} disabled | {InvalidCronJobs} invalid cron | {InvalidTimezoneJobs} timezone warnings",
+                    _commands.Count,
+                    validJobs,
+                    disabledJobs,
+                    invalidCronJobs,
+                    invalidTimezoneJobs);
+
+                if(validationIssues.Count > 0)
+                {
+                    _logger.LogWarning(
+                        "Configuration validation issues found:\n{Issues}",
+                        string.Join("\n", validationIssues));
+                }
+
+                if(validJobs == 0 && _commands.Count > 0)
+                {
+                    _logger.LogWarning(
+                        "WARNING: No valid enabled jobs found! All {Count} jobs are either disabled or have configuration errors. Scheduler will run but execute nothing.",
+                        _commands.Count);
+                }
             }
         }
 
@@ -207,14 +265,20 @@ namespace RunCommandsService
 
             _configWatcher.Changed += (sender, e) =>
             {
-                var now = DateTime.UtcNow;
-                if((now - _lastReload).TotalMilliseconds < 800)
-                    return; // debounce
-                _lastReload = now;
+                try
+                {
+                    var now = DateTime.UtcNow;
+                    if((now - _lastReload).TotalMilliseconds < 800)
+                        return; // debounce
+                    _lastReload = now;
 
-                _logger.LogInformation("Configuration file changed. Reloading commands...");
-                Thread.Sleep(300); // small settle time
-                LoadCommands();
+                    _logger.LogInformation("Configuration file changed. Reloading commands...");
+                    Thread.Sleep(300); // small settle time
+                    LoadCommands();
+                } catch(Exception ex)
+                {
+                    _logger.LogError(ex, "Error during configuration hot-reload. Previous configuration will remain active.");
+                }
             };
 
 
@@ -231,6 +295,12 @@ namespace RunCommandsService
             {
                 try
                 {
+                    // Update heartbeat - scheduler loop is alive
+                    lock(_healthLock)
+                    {
+                        _lastSchedulerHeartbeat = DateTime.UtcNow;
+                    }
+
                     // Keep dashboard fresh
                     RefreshMonitorSnapshot();
 
@@ -259,7 +329,7 @@ namespace RunCommandsService
 
                         if(nowUtc >= due.Value)
                         {
-                            // Visibility when things “don’t run”
+                            // Visibility when things "don't run"
                             _logger.LogDebug("Due @ {Due:o} (now {Now:o}) → launching {Id}", due.Value, nowUtc, cmd.Id);
 
                             // Do not block the scheduler loop; fire-and-forget with internal concurrency limits
@@ -270,6 +340,12 @@ namespace RunCommandsService
                             _nextRunUtc[cmd.Id] = next;
                             RefreshMonitorSnapshot();
                         }
+                    }
+
+                    // Reset error count on successful iteration
+                    lock(_healthLock)
+                    {
+                        _schedulerErrorCount = 0;
                     }
 
                     await Task.Delay(TimeSpan.FromSeconds(_schedOptions.PollSeconds), stoppingToken);
@@ -283,15 +359,64 @@ namespace RunCommandsService
                     break;
                 } catch(Exception ex)
                 {
-                    _logger.LogError(ex, "Unexpected error in command execution loop");
-                    // small backoff so we don't spin if something transient fails
+                    int errorCount;
+                    lock(_healthLock)
+                    {
+                        _schedulerErrorCount++;
+                        errorCount = _schedulerErrorCount;
+                    }
+
+                    _logger.LogError(
+                        ex,
+                        "Unexpected error in command execution loop (error #{ErrorCount}). Will retry in 10 seconds.",
+                        errorCount);
+
+                    // Alert if scheduler is repeatedly failing
+                    if(errorCount >= 3)
+                    {
+                        _logger.LogCritical(
+                            "CRITICAL: Scheduler loop has failed {ErrorCount} times consecutively. This may indicate a serious system issue.",
+                            errorCount);
+                    }
+
+                    // Exponential backoff with cap at 60 seconds
+                    var backoffSeconds = Math.Min(10 * Math.Pow(2, Math.Min(errorCount - 1, 3)), 60);
                     try
                     {
-                        await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
+                        await Task.Delay(TimeSpan.FromSeconds(backoffSeconds), stoppingToken);
                     } catch
                     { /* ignore */
                     }
                 }
+            }
+        }
+
+        /// <summary>
+        /// Get scheduler health information
+        /// </summary>
+        public object GetSchedulerHealth()
+        {
+            lock(_healthLock)
+            {
+                var now = DateTime.UtcNow;
+                var timeSinceHeartbeat = _lastSchedulerHeartbeat == DateTime.MinValue
+                    ? (TimeSpan?)null
+                    : now - _lastSchedulerHeartbeat;
+
+                var isHealthy = timeSinceHeartbeat.HasValue &&
+                                timeSinceHeartbeat.Value.TotalSeconds < (_schedOptions.PollSeconds * 3) &&
+                                _schedulerErrorCount == 0;
+
+                return new
+                {
+                    healthy = isHealthy,
+                    lastHeartbeat = _lastSchedulerHeartbeat == DateTime.MinValue
+                        ? null
+                        : _lastSchedulerHeartbeat.ToString("o"),
+                    secondsSinceHeartbeat = timeSinceHeartbeat?.TotalSeconds,
+                    consecutiveErrors = _schedulerErrorCount,
+                    pollIntervalSeconds = _schedOptions.PollSeconds
+                };
             }
         }
 
@@ -497,7 +622,20 @@ namespace RunCommandsService
                         });
                 } catch(Exception ex)
                 {
-                    _logger.LogError(ex, "Error executing {Id}", command.Id);
+                    _logger.LogError(
+                        ex,
+                        "Error executing {Id}. Command: {Command}. Exception Type: {ExceptionType}",
+                        command.Id,
+                        command.Command,
+                        ex.GetType().Name);
+
+                    // Provide detailed error context
+                    var errorDetails = $"{ex.GetType().Name}: {ex.Message}";
+                    if(ex.InnerException != null)
+                    {
+                        errorDetails += $" | Inner: {ex.InnerException.GetType().Name}: {ex.InnerException.Message}";
+                    }
+
                     _monitor.Record(
                         new ExecutionEvent
                         {
@@ -507,7 +645,7 @@ namespace RunCommandsService
                             EndUtc = DateTime.UtcNow,
                             ExitCode = null,
                             Success = false,
-                            Error = ex.ToString()
+                            Error = errorDetails
                         });
                 }
             }

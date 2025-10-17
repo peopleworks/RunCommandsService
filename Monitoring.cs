@@ -240,6 +240,7 @@ Message:  ${CustomMessage}";
         private readonly ConcurrentDictionary<string, int> _consecutiveFailures = new();
         private readonly object _scheduleLock = new();
         private List<ScheduledCommandView> _scheduleSnapshot = new();
+        private Func<object> _schedulerHealthProvider;
 
         public ExecutionMonitor(IOptions<MonitoringOptions> options, ILogger<ExecutionMonitor> logger, ILoggerFactory loggerFactory)
         {
@@ -265,6 +266,11 @@ Message:  ${CustomMessage}";
             {
                 _scheduleSnapshot = snapshot?.ToList() ?? new List<ScheduledCommandView>();
             }
+        }
+
+        public void SetSchedulerHealthProvider(Func<object> healthProvider)
+        {
+            _schedulerHealthProvider = healthProvider;
         }
 
         public void Record(ExecutionEvent ev)
@@ -382,6 +388,9 @@ Message:  ${CustomMessage}";
                 recent,
                 consecutiveFailures = _consecutiveFailures.ToDictionary(kv => kv.Key, kv => kv.Value),
                 scheduled = scheduledForPayload,
+
+                // Scheduler health status
+                schedulerHealth = _schedulerHealthProvider?.Invoke(),
 
                 // NEW: simple UI hints for the dashboard
                 ui = new
@@ -810,12 +819,9 @@ Message:  ${CustomMessage}";
 
             if(job.TryGetValue("TimeZone", out var tz) && !string.IsNullOrWhiteSpace(Convert.ToString(tz)))
             {
-                try
+                if(!TimeZoneHelper.IsValidTimeZone(Convert.ToString(tz), out var tzError))
                 {
-                    _ = TimeZoneInfo.FindSystemTimeZoneById(Convert.ToString(tz));
-                } catch
-                {
-                    WriteJson(ctx, new { ok = false, error = "Invalid TimeZone" }, 400);
+                    WriteJson(ctx, new { ok = false, error = $"Invalid TimeZone: {tzError}" }, 400);
                     return;
                 }
             }
