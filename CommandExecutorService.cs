@@ -1,14 +1,12 @@
+using AsyncKeyedLock;
 using Cronos;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using System;
 using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.Linq;
 using System.Runtime.Versioning;
-using System.Threading;
 
 namespace RunCommandsService
 {
@@ -17,13 +15,13 @@ namespace RunCommandsService
         private readonly IConfiguration _configuration;
         private readonly ILogger<CommandExecutorService> _logger;
         private readonly ExecutionMonitor _monitor;
-        private readonly ConcurrencyManager _concurrency;
+        private readonly AsyncKeyedLocker<string> _concurrency;
         private readonly SchedulerOptions _schedOptions;
         private FileSystemWatcher _configWatcher;
-        private readonly SemaphoreSlim _parallelism;
+        private readonly AsyncNonKeyedLocker _parallelism;
 
         private List<ScheduledCommand> _commands = new();
-        private readonly object _lockObject = new object();
+        private readonly Lock _lockObject = new();
 
         // Next run storage (UTC) by job id
         private readonly ConcurrentDictionary<string, DateTime?> _nextRunUtc = new();
@@ -36,14 +34,14 @@ namespace RunCommandsService
         // Scheduler health tracking
         private DateTime _lastSchedulerHeartbeat = DateTime.MinValue;
         private int _schedulerErrorCount = 0;
-        private readonly object _healthLock = new object();
+        private readonly Lock _healthLock = new();
 
 
         public CommandExecutorService(
             IConfiguration configuration,
             IOptions<SchedulerOptions> schedOptions,
             ExecutionMonitor monitor,
-            ConcurrencyManager concurrency,
+            AsyncKeyedLocker<string> concurrency,
             ILogger<CommandExecutorService> logger)
         {
             _configuration = configuration;
@@ -52,7 +50,7 @@ namespace RunCommandsService
             _concurrency = concurrency;
             _logger = logger;
 
-            _parallelism = new SemaphoreSlim(Math.Max(1, _schedOptions.MaxParallelism));
+            _parallelism = new(Math.Max(1, _schedOptions.MaxParallelism));
 
             // Initialize TimeZoneHelper with logger for diagnostics
             TimeZoneHelper.Initialize(logger);
@@ -73,7 +71,8 @@ namespace RunCommandsService
                 cron = CronExpression.Parse(text);
                 error = null;
                 return true;
-            } catch(Exception ex)
+            }
+            catch (Exception ex)
             {
                 cron = null;
                 error = ex.Message;
@@ -83,7 +82,7 @@ namespace RunCommandsService
 
         private static TimeZoneInfo TZ(string tz)
         {
-            if(string.IsNullOrWhiteSpace(tz))
+            if (string.IsNullOrWhiteSpace(tz))
                 return TimeZoneInfo.Utc;
             return TimeZoneHelper.FindTimeZone(tz);
         }
@@ -97,7 +96,8 @@ namespace RunCommandsService
                 // Cronos returns UTC when a time zone is provided and base time is UTC
                 var nextUtc = cron.GetNextOccurrence(DateTime.SpecifyKind(utcNow, DateTimeKind.Utc), tz);
                 return nextUtc;
-            } catch
+            }
+            catch
             {
                 return null;
             }
@@ -107,7 +107,7 @@ namespace RunCommandsService
         private static DateTime ConvertLocalToUtc(DateTime localUnspec, TimeZoneInfo tz)
         {
             // Spring-forward "skipped" local times — nudge forward to a valid instant
-            if(tz.IsInvalidTime(localUnspec))
+            if (tz.IsInvalidTime(localUnspec))
                 localUnspec = localUnspec.AddHours(1);
 
             // For ambiguous times (fall-back), ConvertTimeToUtc() will choose standard time by default.
@@ -119,20 +119,20 @@ namespace RunCommandsService
         {
             var now = DateTime.UtcNow;
             List<ScheduledCommand> snapshot;
-            lock(_lockObject)
+            lock (_lockObject)
                 snapshot = _commands?.ToList() ?? new List<ScheduledCommand>();
 
             var schedule = snapshot.Select(
                 c =>
                 {
-                    if(c == null)
+                    if (c == null)
                         c = new ScheduledCommand();
 
                     string nextRun = null;
-                    if(c.Cron != null)
+                    if (c.Cron != null)
                     {
                         var next = SafeNextOccurrenceUtc(c.Cron, now, TZ(c.TimeZone));
-                        if(next.HasValue)
+                        if (next.HasValue)
                             nextRun = next.Value.ToString("o");
                     }
 
@@ -158,7 +158,7 @@ namespace RunCommandsService
 
         private void LoadCommands()
         {
-            lock(_lockObject)
+            lock (_lockObject)
             {
                 _commands = _configuration.GetSection("ScheduledCommands").Get<List<ScheduledCommand>>() ??
                     new List<ScheduledCommand>();
@@ -170,12 +170,12 @@ namespace RunCommandsService
                 var disabledJobs = 0;
                 var validationIssues = new List<string>();
 
-                foreach(var c in _commands)
+                foreach (var c in _commands)
                 {
-                    if(string.IsNullOrWhiteSpace(c.Id))
+                    if (string.IsNullOrWhiteSpace(c.Id))
                         c.Id = c.Command;
 
-                    if(string.IsNullOrWhiteSpace(c.TimeZone))
+                    if (string.IsNullOrWhiteSpace(c.TimeZone))
                         c.TimeZone = _schedOptions.DefaultTimeZone;
 
                     // Allow logging again if a previously-bad cron was fixed
@@ -183,7 +183,7 @@ namespace RunCommandsService
 
                     // Validate timezone with detailed result
                     var tzResult = TimeZoneHelper.FindTimeZoneWithResult(c.TimeZone);
-                    if(tzResult.FellBackToUtc && c.Enabled)
+                    if (tzResult.FellBackToUtc && c.Enabled)
                     {
                         invalidTimezoneJobs++;
                         validationIssues.Add($"  • Job '{c.Id}': Invalid timezone '{tzResult.OriginalId}' → using UTC");
@@ -195,26 +195,27 @@ namespace RunCommandsService
                     bool hasCron = !string.IsNullOrWhiteSpace(c.CronExpression);
                     bool parsed = hasCron && TryParseCron(c.CronExpression, out cron, out cronErr);
 
-                    if(parsed)
+                    if (parsed)
                     {
                         c.Cron = cron;
                         _nextRunUtc[c.Id] = SafeNextOccurrenceUtc(cron, now, TZ(c.TimeZone));
 
-                        if(c.Enabled)
+                        if (c.Enabled)
                             validJobs++;
                         else
                             disabledJobs++;
-                    } else
+                    }
+                    else
                     {
                         c.Cron = null;
                         _nextRunUtc[c.Id] = null;
 
                         // Only complain for enabled jobs
-                        if(c.Enabled)
+                        if (c.Enabled)
                         {
                             invalidCronJobs++;
                             var err = !hasCron ? "missing CronExpression" : $"invalid CronExpression — {cronErr}";
-                            if(_invalidScheduleLogged.Add(c.Id))
+                            if (_invalidScheduleLogged.Add(c.Id))
                                 _logger.LogError("Job {Id}: {Error}. Job will be skipped until fixed.", c.Id, err);
 
                             validationIssues.Add($"  • Job '{c.Id}': {err}");
@@ -237,14 +238,14 @@ namespace RunCommandsService
                     invalidCronJobs,
                     invalidTimezoneJobs);
 
-                if(validationIssues.Count > 0)
+                if (validationIssues.Count > 0)
                 {
                     _logger.LogWarning(
                         "Configuration validation issues found:\n{Issues}",
                         string.Join("\n", validationIssues));
                 }
 
-                if(validJobs == 0 && _commands.Count > 0)
+                if (validJobs == 0 && _commands.Count > 0)
                 {
                     _logger.LogWarning(
                         "WARNING: No valid enabled jobs found! All {Count} jobs are either disabled or have configuration errors. Scheduler will run but execute nothing.",
@@ -268,14 +269,15 @@ namespace RunCommandsService
                 try
                 {
                     var now = DateTime.UtcNow;
-                    if((now - _lastReload).TotalMilliseconds < 800)
+                    if ((now - _lastReload).TotalMilliseconds < 800)
                         return; // debounce
                     _lastReload = now;
 
                     _logger.LogInformation("Configuration file changed. Reloading commands...");
                     Thread.Sleep(300); // small settle time
                     LoadCommands();
-                } catch(Exception ex)
+                }
+                catch (Exception ex)
                 {
                     _logger.LogError(ex, "Error during configuration hot-reload. Previous configuration will remain active.");
                 }
@@ -291,12 +293,12 @@ namespace RunCommandsService
         {
             _logger.LogInformation("Service started");
 
-            while(!stoppingToken.IsCancellationRequested)
+            while (!stoppingToken.IsCancellationRequested)
             {
                 try
                 {
                     // Update heartbeat - scheduler loop is alive
-                    lock(_healthLock)
+                    lock (_healthLock)
                     {
                         _lastSchedulerHeartbeat = DateTime.UtcNow;
                     }
@@ -305,18 +307,18 @@ namespace RunCommandsService
                     RefreshMonitorSnapshot();
 
                     List<ScheduledCommand> currentCommands;
-                    lock(_lockObject)
+                    lock (_lockObject)
                         currentCommands = _commands.ToList();
 
                     var nowUtc = DateTime.UtcNow;
 
-                    foreach(var cmd in currentCommands)
+                    foreach (var cmd in currentCommands)
                     {
-                        if(cmd == null)
+                        if (cmd == null)
                             continue;
-                        if(!cmd.Enabled)
+                        if (!cmd.Enabled)
                             continue;
-                        if(cmd.Cron == null)
+                        if (cmd.Cron == null)
                             continue; // invalid cron or missing → skip
 
                         // compute or read stored next run
@@ -324,10 +326,10 @@ namespace RunCommandsService
                             cmd.Id,
                             _ => SafeNextOccurrenceUtc(cmd.Cron, nowUtc, TZ(cmd.TimeZone)));
 
-                        if(!due.HasValue)
+                        if (!due.HasValue)
                             continue;
 
-                        if(nowUtc >= due.Value)
+                        if (nowUtc >= due.Value)
                         {
                             // Visibility when things "don't run"
                             _logger.LogDebug("Due @ {Due:o} (now {Now:o}) → launching {Id}", due.Value, nowUtc, cmd.Id);
@@ -343,24 +345,27 @@ namespace RunCommandsService
                     }
 
                     // Reset error count on successful iteration
-                    lock(_healthLock)
+                    lock (_healthLock)
                     {
                         _schedulerErrorCount = 0;
                     }
 
                     await Task.Delay(TimeSpan.FromSeconds(_schedOptions.PollSeconds), stoppingToken);
-                } catch(OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                 {
                     _logger.LogInformation("Scheduler loop cancelled (shutdown).");
                     break;
-                } catch(TaskCanceledException) when (stoppingToken.IsCancellationRequested)
+                }
+                catch (TaskCanceledException) when (stoppingToken.IsCancellationRequested)
                 {
                     _logger.LogInformation("Scheduler loop task canceled (shutdown).");
                     break;
-                } catch(Exception ex)
+                }
+                catch (Exception ex)
                 {
                     int errorCount;
-                    lock(_healthLock)
+                    lock (_healthLock)
                     {
                         _schedulerErrorCount++;
                         errorCount = _schedulerErrorCount;
@@ -372,7 +377,7 @@ namespace RunCommandsService
                         errorCount);
 
                     // Alert if scheduler is repeatedly failing
-                    if(errorCount >= 3)
+                    if (errorCount >= 3)
                     {
                         _logger.LogCritical(
                             "CRITICAL: Scheduler loop has failed {ErrorCount} times consecutively. This may indicate a serious system issue.",
@@ -384,7 +389,8 @@ namespace RunCommandsService
                     try
                     {
                         await Task.Delay(TimeSpan.FromSeconds(backoffSeconds), stoppingToken);
-                    } catch
+                    }
+                    catch
                     { /* ignore */
                     }
                 }
@@ -396,7 +402,7 @@ namespace RunCommandsService
         /// </summary>
         public object GetSchedulerHealth()
         {
-            lock(_healthLock)
+            lock (_healthLock)
             {
                 var now = DateTime.UtcNow;
                 var timeSinceHeartbeat = _lastSchedulerHeartbeat == DateTime.MinValue
@@ -425,15 +431,14 @@ namespace RunCommandsService
         // Fix for CS1524 and CS1513 in RunCommandAsync method
         private async Task RunCommandAsync(ScheduledCommand command, CancellationToken ct)
         {
-            await _parallelism.WaitAsync(ct);
-            try
+            using (await _parallelism.LockAsync(ct))
             {
-                using var acquired = await _concurrency.TryAcquireAsync(
+                using var acquired = await _concurrency.ConditionalLockAsync(
                     command.ConcurrencyKey ?? command.Id,
-                    command.AllowParallelRuns,
+                    !command.AllowParallelRuns,
                     ct);
 
-                if(acquired == null)
+                if (acquired == null)
                 {
                     _logger.LogWarning(
                         "Skipping {Id} due to concurrency key in use ({Key})",
@@ -457,12 +462,12 @@ namespace RunCommandsService
 
                 try
                 {
-                    if(!command.QuietStartLog)
+                    if (!command.QuietStartLog)
                         _logger.LogInformation("Executing {Id}: {Command}", command.Id, command.Command);
 
                     // Linked CTS so we can differentiate shutdown vs per-job timeout.
                     using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                    if(command.MaxRuntimeMinutes is int maxMin && maxMin > 0)
+                    if (command.MaxRuntimeMinutes is int maxMin && maxMin > 0)
                         cts.CancelAfter(TimeSpan.FromMinutes(maxMin));
 
                     var psi = new ProcessStartInfo("cmd.exe")
@@ -475,7 +480,7 @@ namespace RunCommandsService
                     };
 
                     using var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
-                    if(!process.Start())
+                    if (!process.Start())
                         throw new InvalidOperationException($"Failed to start process for {command.Id}");
 
                     // If the host is shutting down, be nice to the child process.
@@ -484,9 +489,10 @@ namespace RunCommandsService
                         {
                             try
                             {
-                                if(!process.HasExited)
+                                if (!process.HasExited)
                                     process.Kill(entireProcessTree: true);
-                            } catch
+                            }
+                            catch
                             {
                             }
                         });
@@ -502,14 +508,16 @@ namespace RunCommandsService
                     {
                         // Await exit; this may be canceled by timeout (cts.CancelAfter) or service shutdown (ct).
                         await process.WaitForExitAsync(cts.Token);
-                    } catch(OperationCanceledException) when (ct.IsCancellationRequested)
+                    }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested)
                     {
                         // Service is stopping: treat as normal (no error / no timeout warning).
                         try
                         {
-                            if(!process.HasExited)
+                            if (!process.HasExited)
                                 process.Kill(entireProcessTree: true);
-                        } catch
+                        }
+                        catch
                         {
                         }
                         _logger.LogInformation("Execution cancelled (shutdown) for {Id}", command.Id);
@@ -526,14 +534,16 @@ namespace RunCommandsService
                                 Error = null
                             });
                         return; // don't continue to output handling
-                    } catch(OperationCanceledException)
+                    }
+                    catch (OperationCanceledException)
                     {
                         // Per-job timeout
                         try
                         {
                             process.Kill(entireProcessTree: true);
                             _logger.LogWarning("Process {Id} killed due to timeout", command.Id);
-                        } catch(Exception killEx)
+                        }
+                        catch (Exception killEx)
                         {
                             _logger.LogError(killEx, "Failed to kill timed out process for {Id}", command.Id);
                         }
@@ -544,23 +554,23 @@ namespace RunCommandsService
                     var error = await readStdErr;
                     var exitCode = process.HasExited ? process.ExitCode : (int?)null;
 
-                    if(command.CaptureOutput && !string.IsNullOrWhiteSpace(output))
+                    if (command.CaptureOutput && !string.IsNullOrWhiteSpace(output))
                         _logger.LogInformation("Output {Id}:\n{Output}", command.Id, output);
 
-                    if(command.CaptureOutput && !string.IsNullOrWhiteSpace(error))
+                    if (command.CaptureOutput && !string.IsNullOrWhiteSpace(error))
                         _logger.LogError("Errors {Id}:\n{Error}", command.Id, error);
 
                     // Success rules:
                     // - if we captured output and stderr has content -> mark as failure
                     // - otherwise rely on exit code 0
                     var success = (exitCode ?? -1) == 0;
-                    if(command.CaptureOutput && !string.IsNullOrWhiteSpace(error))
+                    if (command.CaptureOutput && !string.IsNullOrWhiteSpace(error))
                         success = false;
 
-                    if(!success)
+                    if (!success)
                     {
                         var exitCodeLogValue = exitCode.HasValue ? exitCode.Value.ToString() : "null";
-                        if(command.CaptureOutput && !string.IsNullOrWhiteSpace(error))
+                        if (command.CaptureOutput && !string.IsNullOrWhiteSpace(error))
                         {
                             _logger.LogError(
                                 "Execution of {Id} failed with exit code {ExitCode}. See stderr output above.",
@@ -591,7 +601,8 @@ namespace RunCommandsService
                                         ? (string.IsNullOrWhiteSpace(error) ? null : error)
                                         : ((exitCode ?? -1) == 0 ? null : $"ExitCode={exitCode}")
                         });
-                } catch(OperationCanceledException) when (ct.IsCancellationRequested)
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
                     // Catch any late shutdown cancellations outside WaitForExitAsync
                     _logger.LogInformation("Execution cancelled (shutdown) for {Id}", command.Id);
@@ -606,7 +617,8 @@ namespace RunCommandsService
                             Success = true,
                             Error = null
                         });
-                } catch(TaskCanceledException) when (ct.IsCancellationRequested)
+                }
+                catch (TaskCanceledException) when (ct.IsCancellationRequested)
                 {
                     _logger.LogInformation("Execution task cancelled (shutdown) for {Id}", command.Id);
                     _monitor.Record(
@@ -620,7 +632,8 @@ namespace RunCommandsService
                             Success = true,
                             Error = null
                         });
-                } catch(Exception ex)
+                }
+                catch (Exception ex)
                 {
                     _logger.LogError(
                         ex,
@@ -631,7 +644,7 @@ namespace RunCommandsService
 
                     // Provide detailed error context
                     var errorDetails = $"{ex.GetType().Name}: {ex.Message}";
-                    if(ex.InnerException != null)
+                    if (ex.InnerException != null)
                     {
                         errorDetails += $" | Inner: {ex.InnerException.GetType().Name}: {ex.InnerException.Message}";
                     }
@@ -647,15 +660,6 @@ namespace RunCommandsService
                             Success = false,
                             Error = errorDetails
                         });
-                }
-            }
-            finally
-            {
-                try
-                {
-                    _parallelism.Release();
-                } catch
-                {
                 }
             }
         }
@@ -713,21 +717,22 @@ namespace RunCommandsService
         {
             try
             {
-                using(var sc = new System.ServiceProcess.ServiceController(serviceName))
+                using (var sc = new System.ServiceProcess.ServiceController(serviceName))
                 {
                     var registryKey = Microsoft.Win32.Registry.LocalMachine
                         .OpenSubKey($"SYSTEM\\CurrentControlSet\\Services\\{serviceName}", true);
 
-                    if(registryKey != null)
+                    if (registryKey != null)
                     {
-                        if(!string.IsNullOrEmpty(properties.DisplayName))
+                        if (!string.IsNullOrEmpty(properties.DisplayName))
                             registryKey.SetValue("DisplayName", properties.DisplayName);
 
-                        if(!string.IsNullOrEmpty(properties.Description))
+                        if (!string.IsNullOrEmpty(properties.Description))
                             registryKey.SetValue("Description", properties.Description);
                     }
                 }
-            } catch(Exception ex)
+            }
+            catch (Exception ex)
             {
                 Console.WriteLine($"Error setting service properties: {ex.Message}");
             }
