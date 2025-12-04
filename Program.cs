@@ -1,4 +1,5 @@
-﻿using Microsoft.Extensions.Configuration;
+﻿using AsyncKeyedLock;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Hosting.WindowsServices;
@@ -51,7 +52,7 @@ public class Program
                 services.Configure<WebhookOptions>(hostContext.Configuration.GetSection("Monitoring:Notifiers:Webhook"));
 
                 // Core singletons
-                services.AddSingleton<ConcurrencyManager>();
+                services.AddSingleton(new AsyncKeyedLocker<string>());
                 services.AddSingleton<ExecutionMonitor>();
 
                 // Hosted services
