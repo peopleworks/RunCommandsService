@@ -1,123 +1,107 @@
-# Scheduled Command Executor Windows Service
+# Scheduled Command Executor — Windows Service
 
-**A lightweight Windows service** that runs commands on cron schedules, with:
+A lightweight **.NET 9 Windows Service** that runs commands on cron schedules, with concurrency control, per‑job timeouts, a live monitoring dashboard, optional email/webhook alerts, and a simple JSON config with hot‑reload.
 
-* concurrency controls,
-* per-job timeouts,
-* live monitoring dashboard,
-* alerts/hooks (optional),
-* and a simple JSON config with hot-reload.
+![.NET](https://img.shields.io/badge/.NET-9.0-512BD4)
+![Platform](https://img.shields.io/badge/platform-Windows-0078D6)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Version](https://img.shields.io/badge/version-2.9.0-blue)
 
-> **New in v2.9:** Production-grade resilience with comprehensive timezone support (80+ zones), startup validation reporting, scheduler health monitoring with heartbeat tracking, exponential backoff on errors, and enhanced diagnostics throughout. **This is the most stable and observable release yet.**
-> **Previously in v2.8:** Correct time zone/DST scheduling across machine vs. job TZ (Cronos with UTC base + job TZ), non‑blocking scheduler loop, and case‑insensitive `validateCron` endpoint alias.
-
-## What's New
-- **v2.9 (Current):**
-  - **Enhanced Timezone Support** – Expanded from 12 to **80+ IANA timezone mappings** covering all major global regions (Americas, Europe, Asia-Pacific, Africa, Middle East)
-  - **Timezone Validation & Warnings** – Unmapped timezones now **log clear warnings** when falling back to UTC (no more silent failures!)
-  - **Startup Validation Summary** – Comprehensive report on service start showing valid/invalid jobs, cron errors, and timezone issues at a glance
-  - **Scheduler Health Monitoring** – Real-time heartbeat tracking exposed via `/api/health` endpoint with `schedulerHealth` section
-  - **Exponential Backoff** – Scheduler errors now use exponential backoff (10s → 20s → 40s → 60s) with critical alerts after 3+ consecutive failures
-  - **Enhanced Error Context** – Exception types, inner exceptions, and detailed diagnostics in all error logs
-  - **Protected Config Reload** – Configuration hot-reload errors no longer crash the service; previous valid config stays active
-  - **Better Observability** – Track scheduler heartbeat, consecutive errors, and get early warnings before complete failures
-- **v2.8:**
-  - Fixed next-run calculations when machine TZ differs from job `TimeZone` and across DST transitions by using Cronos' time zone API with a UTC base time.
-  - Scheduler loop no longer blocks while a job executes; due jobs are dispatched in the background with concurrency limits respected.
-  - `POST /api/jobs/validateCron` now matches runtime calculations; also supports the lowercase alias `/api/jobs/validatecron`.
-- **v2.7:** Local-time dashboard everywhere plus guaranteed failure logging regardless of CaptureOutput.
-- **v2.6:** Edge-to-edge layout, adaptive KPIs, mobile-friendly tables, safer Windows service defaults.
+> **v2.9 — Production resilience & observability:** 80+ timezone mappings, startup validation report, scheduler heartbeat on `/api/health`, exponential backoff on errors, and richer diagnostics throughout. See the [Changelog](#-changelog) for the full history.
 
 ---
 
 ## 🔍 Overview
 
-This Windows Service allows administrators to:
-- Schedule command execution using cron expressions
-- Dynamically update commands without service restart
-- Monitor execution through detailed logging
-- Run system commands with proper Windows privileges
+This service lets administrators:
+
+- Schedule command execution using standard cron expressions (with per‑job time zones).
+- Update jobs **without restarting** the service (hot‑reload of `appsettings.json`).
+- Monitor execution through a built‑in HTTP dashboard and a JSON health endpoint.
+- Run jobs safely with concurrency locks, per‑job timeouts, and optional alerts.
+
+## ✨ Features
+
+- **Cron-based scheduling** — standard 5‑field cron expressions, computed with [Cronos](https://github.com/HangfireIO/Cronos).
+- **Per-job time zones** — 80+ IANA IDs plus native Windows IDs, with DST‑correct next‑run calculation.
+- **Safe concurrency** — global `MaxParallelism` plus per‑job `ConcurrencyKey` locks to prevent overlap on shared resources.
+- **Runtime limits** — per‑job `MaxRuntimeMinutes` auto‑kills hung processes.
+- **Hot configuration reload** — edits to `appsettings.json` apply without a restart; a bad edit keeps the previous valid config.
+- **Live dashboard** — KPIs, scheduled jobs, recent executions, and a tail of the service logs, all in local time.
+- **Job Builder UI** — create/edit/delete jobs from the dashboard with a cron preview (admin‑key protected).
+- **Proactive alerts** — email and/or webhook (Slack/Teams/Discord) on consecutive failures and slow runs.
+- **Observability** — `/api/health` exposes execution history and a scheduler heartbeat for early failure detection.
 
 ## 🏗️ Architecture
 
 ```mermaid
 flowchart TB
     subgraph Configuration
-        A[appsettings.json] --> |Hot Reload| B[ConfigurationWatcher]
-        B --> C[Command List]
+        A[appsettings.json] -->|Hot Reload| B[ConfigurationWatcher]
+        B --> C[Job List]
     end
-    
+
     subgraph Service Core
         D[Windows Service Host] --> E[CommandExecutorService]
         C --> E
-        E --> F[Command Scheduler]
+        E --> F[Cron Scheduler]
         F --> G[Process Executor]
-    end
-    
-    subgraph Logging System
-        G --> H[File Logger]
-        H --> I[Log Files]
+        E --> CK[ConcurrencyManager]
     end
 
-    subgraph Monitoring
-        I --> J[Daily Logs]
-        J --> K[Log Rotation]
+    subgraph Observability
+        G --> H[FileLogger]
+        E --> M[Monitoring HTTP server]
+        M --> DASH[Dashboard + /api/*]
+        E --> N[Alert Notifiers]
+        N --> Email & Webhook
     end
 ```
-
-## ✨ Features
-
-- **Cron-based Scheduling**: Use standard cron expressions for flexible command scheduling
-- **Local-first Dashboard (new in v2.7)**: UI renders all timestamps in the browser's local time while keeping UTC hints in tooltips
-- **Hot Configuration Reload**: Update commands without service restart
-- **Comprehensive Logging**: Detailed logs with automatic rotation
-- **Windows Service Integration**: Proper Windows service lifecycle management
-- **Error Handling**: Robust error handling with detailed logging
-- **Service Description**: Clear service description in Windows Services manager
 
 ## 📋 Prerequisites
 
 - Windows OS
-- .NET 9.0 (build target)
-- Administrative privileges for service installation
+- [.NET 9.0 SDK](https://dotnet.microsoft.com/download) (to build) / .NET 9 runtime (to run)
+- Administrative privileges for service installation and URL ACL reservation
 
-## 🚀 Installation
+## 🚀 Quick start
 
-Option A — Debug run (console)
+**Run in the console (for development):**
+
 ```powershell
 dotnet build -c Debug
 dotnet run --project .\RunCommandsService\RunCommandsService.csproj
 ```
 
-Option B — Install as a Windows Service (recommended)
+Then open <http://localhost:5058/> for the dashboard or `curl http://localhost:5058/api/health`.
 
-1) Publish binaries
+## 🧩 Install as a Windows Service (recommended)
+
+**1) Publish the binaries**
+
 ```powershell
 dotnet publish .\RunCommandsService\RunCommandsService.csproj -c Release -o C:\Apps\RunCommandsService
 ```
 
-2) Reserve HTTP prefix (run PowerShell as Administrator)
+**2) Reserve the HTTP prefix** (run PowerShell as Administrator)
 
-- For local debug under your current user:
 ```powershell
-netsh http delete urlacl url=http://localhost:5058/
+# For the Windows service running as LocalSystem:
+netsh http add urlacl url=http://+:5058/ user="NT AUTHORITY\SYSTEM"
+
+# Or, for a local debug run under your current user:
 netsh http add urlacl url=http://localhost:5058/ user="%USERDOMAIN%\%USERNAME%"
 ```
 
-- For the Windows service running as LocalSystem:
-```powershell
-netsh http add urlacl url=http://+:5058/ user="NT AUTHORITY\SYSTEM"
-```
+**3) Create and start the service**
 
-3) Install service
-
-- Using `sc.exe`:
 ```powershell
 sc.exe create "ScheduledCommandExecutor" binPath= "C:\Apps\RunCommandsService\RunCommandsService.exe" start= auto
 sc.exe start "ScheduledCommandExecutor"
 ```
 
-- Or using PowerShell `New-Service`:
+Or with PowerShell:
+
 ```powershell
 New-Service -Name "ScheduledCommandExecutor" `
             -BinaryPathName "C:\Apps\RunCommandsService\RunCommandsService.exe" `
@@ -127,331 +111,124 @@ New-Service -Name "ScheduledCommandExecutor" `
 Start-Service "ScheduledCommandExecutor"
 ```
 
-4) Verify API and dashboard
+**4) Verify**
+
 ```powershell
 curl http://localhost:5058/api/health
 start http://localhost:5058/
 ```
 
-Notes
-- Ensure `Monitoring:HttpPrefixes` contains `http://localhost:5058/` (with trailing slash) to match the reserved URL.
-- To update: `sc.exe stop ScheduledCommandExecutor`, replace files in `C:\Apps\RunCommandsService`, then `sc.exe start ScheduledCommandExecutor`.
-- To uninstall: `sc.exe stop ScheduledCommandExecutor` (if running) and `sc.exe delete ScheduledCommandExecutor`.
+**Updating / uninstalling**
 
-## ✨ Features
+- Update: `sc.exe stop ScheduledCommandExecutor`, replace files in `C:\Apps\RunCommandsService`, then `sc.exe start ScheduledCommandExecutor`.
+- Uninstall: `sc.exe stop ScheduledCommandExecutor` then `sc.exe delete ScheduledCommandExecutor`.
 
-- **Cron-based Scheduling**: Use standard cron expressions for flexible command scheduling
-- **Local-first Dashboard (new in v2.7)**: UI renders all timestamps in the browser's local time while keeping UTC hints in tooltips
-- **Hot Configuration Reload**: Update commands without service restart
-- **Comprehensive Logging**: Detailed logs with automatic rotation
-- **Windows Service Integration**: Proper Windows service lifecycle management
-- **Error Handling**: Robust error handling with detailed logging
-- **Service Description**: Clear service description in Windows Services manager
-
-## 📋 Prerequisites
-
-- Windows OS
-- .NET 9.0 (build target)
-- Administrative privileges for service installation
-
-
-## ✨ Features
-
-- **Cron-based Scheduling**: Use standard cron expressions for flexible command scheduling
-- **Local-first Dashboard (new in v2.7)**: UI renders all timestamps in the browser's local time while keeping UTC hints in tooltips
-- **Hot Configuration Reload**: Update commands without service restart
-- **Comprehensive Logging**: Detailed logs with automatic rotation
-- **Windows Service Integration**: Proper Windows service lifecycle management
-- **Error Handling**: Robust error handling with detailed logging
-- **Service Description**: Clear service description in Windows Services manager
-
-## 📋 Prerequisites
-
-- Windows OS
-- .NET 9.0 (build target)
-- Administrative privileges for service installation
-
-## ✨ Features
-
-- **Cron-based Scheduling**: Use standard cron expressions for flexible command scheduling
-- **Local-first Dashboard (new in v2.7)**: UI renders all timestamps in the browser's local time while keeping UTC hints in tooltips
-- **Hot Configuration Reload**: Update commands without service restart
-- **Comprehensive Logging**: Detailed logs with automatic rotation
-- **Windows Service Integration**: Proper Windows service lifecycle management
-- **Error Handling**: Robust error handling with detailed logging
-- **Service Description**: Clear service description in Windows Services manager
-
-## 📋 Prerequisites
-
-- Windows OS
-- .NET 9.0 (build target)
-- Administrative privileges for service installation
+> **Note:** `Monitoring.HttpPrefixes` must contain `http://localhost:5058/` (with trailing slash) to match the reserved URL ACL.
 
 ## ⚙️ Configuration
 
-Create an `appsettings.json` file in the service directory:
-
-```json
-{
-  "Logging": {
-    "LogLevel": {
-      "Default": "Information",
-      "Microsoft": "Warning",
-      "Microsoft.Hosting.Lifetime": "Information"
-    }
-  },
-  "ScheduledCommands": [
-    {
-      "Command": "C:\\Windows\\System32\\inetsrv\\appcmd stop site /site.name:yoursite",
-      "CronExpression": "0 0 * * *"
-    },
-    {
-      "Command": "C:\\Windows\\System32\\inetsrv\\appcmd start site /site.name:yoursite",
-      "CronExpression": "5 0 * * *"
-    }
-  ]
-}
-```
-
-### Cron Expression Examples
-
-```mermaid
-graph LR
-    A[Cron Expression] --> B["'* * * * *'"]
-    B --> C[Minute]
-    B --> D[Hour]
-    B --> E[Day of Month]
-    B --> F[Month]
-    B --> G[Day of Week]
-    
-    H[Common Examples] --> I["0 0 * * *<br/>Daily at midnight"]
-    H --> J["*/15 * * * *<br/>Every 15 minutes"]
-    H --> K["0 */4 * * *<br/>Every 4 hours"]
-
-```
-
-## 📝 Logging
-
-Logs are stored in the `Logs` directory with the following features:
-- Guaranteed failure summaries even when job output is not captured (v2.7)
-- Daily log files (`log_yyyy-MM-dd.txt`)
-- Automatic rotation after 30 days
-- Size limit of 10MB per file
-- Detailed timestamp and log level information
-
-Example log entry:
-```
-2024-02-23 14:30:15 [Information] Service started
-2024-02-23 14:30:16 [Information] Loaded 3 commands from configuration
-2024-02-23 14:30:20 [Information] Starting command execution: C:\Windows\System32\inetsrv\appcmd stop site...
-```
-
-## 🔄 Service Lifecycle
-
-```mermaid
-stateDiagram-v2
-    [*] --> Starting: Service Start
-    Starting --> Running: Initialize
-    Running --> ConfigReload: Config Changed
-    ConfigReload --> Running: Load New Config
-    Running --> ExecutingCommand: Cron Trigger
-    ExecutingCommand --> Running: Command Complete
-    Running --> Stopping: Stop Signal
-    Stopping --> [*]: Cleanup
-
-```
-
-## 🛠️ Development
-
-### 🧱 Project Structure
-
-```
-RunCommandsService/
-├─ Program.cs # Host setup (Windows Service, DI, logging)
-├─ CommandExecutorService.cs # Scheduler/executor core (cron, concurrency, run/timeout)
-├─ Monitoring.cs # HTTP dashboard (/ + /api/health + /api/logs + Job Builder APIs)
-├─ ConcurrencyManager.cs # Keyed lock to prevent overlapping runs
-├─ SchedulerOptions.cs # Scheduler configuration (PollSeconds, DefaultTimeZone, etc.)
-├─ FileLogger.cs # Rolling file logger (daily log_*.txt in base/ or Logs/)
-├─ WebhookNotifier.cs # (Optional) webhook alert notifier (implements IAlertNotifier)
-├─ HealthHttpServerService.cs # Back-compat no-op hosted service
-├─ dashboard.html # Standalone UI (cards, tables, logs tail, Job Builder modal)
-├─ favicon.ico # Dashboard icon
-├─ appsettings.json # Configuration (Monitoring, Notifiers, ScheduledCommands)
-├─ README.md # Documentation
-└─ Logs/ # (runtime) log directory; API tails newest file in base/logs/Log/
-
-
-### Key files
-- **Monitoring.cs** – serves the dashboard and exposes Job Builder endpoints  
-  `GET /api/health`, `GET /api/logs?tailKb=128`, `GET/POST/PUT/DELETE /api/jobs`, `POST /api/jobs/validateCron`
-- **CommandExecutorService.cs** – cron scheduling, concurrency, max runtime, graceful shutdown
-- **appsettings.json** – includes `ScheduledCommands` and `Monitoring` (`AdminKey` for Job Builder writes)
-- **dashboard.html** – UI with KPIs, tables, logs tail, “+ New job” wizard (cron preview)
-
-> Notes:  
-> • The service also tails daily `log_YYYY-MM-DD.txt` in the base folder and will read from `log/` or `Logs/` if present.  
-> • Set `Monitoring:Dashboard:HtmlPath` if you move the HTML.
-
-```
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a Pull Request
-
-## 📜 License
-
-MIT License - feel free to use this code in your projects.
-
-## 🚨 Common Issues and Solutions
-
-1. **Service Won't Start**
-   - Check Windows Event Viewer for errors
-   - Verify appsettings.json exists and is valid
-   - Ensure proper permissions on log directory
-   - **New in v2.9:** Review startup validation summary in logs for configuration issues
-
-2. **Commands Not Executing**
-   - Verify cron expressions are correct
-   - Check service logs for execution attempts
-   - Ensure commands have proper paths
-   - **New in v2.9:** Check startup logs for "invalid CronExpression" or timezone warnings
-
-3. **Configuration Not Updating**
-   - Verify file system permissions
-   - Check logs for configuration reload events
-   - Ensure JSON format is valid
-   - **New in v2.9:** Configuration reload errors are logged but don't crash service
-
-4. **Jobs Running at Wrong Times (v2.9)**
-   - Check startup logs for timezone validation warnings
-   - Verify timezone ID is in supported list (see `TimeZoneHelper.cs` or startup logs)
-   - Use Windows timezone IDs (e.g., "Eastern Standard Time") or supported IANA IDs
-   - Monitor `/api/health` for timezone fallback warnings
-
-5. **Scheduler Not Responding (v2.9)**
-   - Check `/api/health` endpoint's `schedulerHealth` section
-   - Look for `consecutiveErrors > 0` indicating scheduler issues
-   - Review logs for CRITICAL level messages about scheduler failures
-   - Verify `lastHeartbeat` is updating (should be within 3× `pollIntervalSeconds`)
-
-## 🔍 Monitoring and Maintenance
-
-1. **Log Monitoring**
-   - Check daily log files in the Logs directory
-   - Monitor command execution status
-   - Review error logs for issues
-
-2. **Performance Considerations**
-   - Monitor log file sizes
-   - Check command execution times
-   - Verify configuration reload performance
-
-## 📊 Best Practices
-
-1. **Command Configuration**
-   - Use full paths in commands
-   - Set appropriate cron schedules
-   - Include command descriptions in config
-
-2. **Logging**
-   - Regular log review
-   - Maintain adequate disk space
-   - Archive important logs
-
-3. **Security**
-   - Run service with appropriate privileges
-   - Secure access to configuration file
-   - Monitor command execution results
-
-## 🔗 Related Resources
-
-- [Windows Service Documentation](https://docs.microsoft.com/en-us/dotnet/framework/windows-services/)
-- [Cron Expression Generator](https://crontab.guru/)
-- [.NET Core Documentation](https://docs.microsoft.com/en-us/dotnet/core/)
-</antArtifact>
-
-This documentation provides:
-1. Clear architecture diagrams
-2. Detailed setup instructions
-3. Configuration examples
-4. Best practices and troubleshooting
-5. Maintenance guidelines
-
-Would you like me to:
-1. Add more technical details to any section?
-2. Include additional diagrams?
-3. Expand any particular topic?
-4. Add code examples for specific scenarios?
-
-## ⚙️ Configuration (excerpt of `appsettings.json`)
+Configuration lives in `appsettings.json`. A minimal example:
 
 ```json
 {
   "Scheduler": {
     "PollSeconds": 5,
     "MaxParallelism": 2,
-    "DefaultTimeZone": "America/New_York"
+    "DefaultTimeZone": "Eastern Standard Time"
   },
   "Monitoring": {
     "EnableHttpEndpoint": true,
+    "AdminKey": "put-a-strong-random-key-here",
     "HttpPrefixes": [ "http://localhost:5058/" ],
-    "AlertOn": {
-      "ConsecutiveFailures": 2,
-      "ExecutionTimeMsThreshold": 60000
-    },
+    "Dashboard": { "Enabled": true, "HtmlPath": "dashboard.html", "AutoRefreshSeconds": 5 },
+    "AlertOn": { "ConsecutiveFailures": 2, "SlowRunMs": 60000 },
     "Notifiers": {
-      "Email": {
-        "Enabled": false,
-        "SmtpHost": "smtp.example.com",
-        "SmtpPort": 587,
-        "UseSsl": true,
-        "User": "user@example.com",
-        "Password": "CHANGE_ME",
-        "From": "alerts@example.com",
-        "To": [ "ops@example.com" ]
-      },
-      "Webhook": {
-        "Enabled": false,
-        "Url": "https://hooks.example.com/your-webhook"
-      }
+      "Email":   { "Enabled": false, "SmtpHost": "smtp.example.com", "SmtpPort": 587, "UseSsl": true,
+                   "User": "user@example.com", "Password": "CHANGE_ME",
+                   "From": "alerts@example.com", "To": [ "ops@example.com" ] },
+      "Webhook": { "Enabled": false, "Url": "https://hooks.example.com/your-webhook" }
     }
   },
   "ScheduledCommands": [
     {
-      "Id": "notepad",
-      "Command": "notepad.exe",
-      "CronExpression": "*/5 * * * *",
-      "TimeZone": "UTC",
+      "Id": "hourly-report",
+      "Command": "powershell.exe -ExecutionPolicy Bypass -File C:\\Jobs\\HourlyReport.ps1",
+      "CronExpression": "0 * * * *",
+      "TimeZone": "America/New_York",
       "Enabled": true,
-      "MaxRuntimeMinutes": 5,
       "AllowParallelRuns": false,
-      "ConcurrencyKey": "ui-apps",
-      "AlertOnFail": true
+      "ConcurrencyKey": "reports",
+      "MaxRuntimeMinutes": 20,
+      "AlertOnFail": true,
+      "CaptureOutput": true,
+      "QuietStartLog": false,
+      "CustomAlertMessage": "Friendly context included in alerts"
     }
   ]
 }
 ```
 
-## 📡 Health endpoint
+### Per-job options
 
-If enabled, the service exposes a JSON health snapshot at the prefixes in `Monitoring.HttpPrefixes` (default: `http://localhost:5058/`).
+| Option | Type | Description |
+| --- | --- | --- |
+| `Id` | string (required) | Unique job identifier. |
+| `Command` | string (required) | Full shell command. Windows examples often use `cmd /c "..."` with quoting. |
+| `CronExpression` | string (required) | 5‑field cron (`min hour dom mon dow`). |
+| `TimeZone` | string | IANA (e.g. `Asia/Tokyo`) or Windows ID (e.g. `Eastern Standard Time`). Invalid IDs log a warning and fall back to `Scheduler.DefaultTimeZone`. |
+| `Enabled` | bool | Include/exclude from scheduling. |
+| `AllowParallelRuns` | bool | If `false`, jobs sharing a `ConcurrencyKey` won't overlap. |
+| `ConcurrencyKey` | string | Grouping key for mutual exclusion. Defaults to `Id` if empty. |
+| `MaxRuntimeMinutes` | int? | Cancels and kills the process after this duration. |
+| `AlertOnFail` | bool | Send alerts on failure (via `Monitoring.Notifiers`). |
+| `CaptureOutput` | bool | If `true`, stdout/stderr are captured and logged; stderr content marks the run failed. |
+| `QuietStartLog` | bool | Suppresses the "Executing…" start log — useful for very frequent jobs. |
+| `CustomAlertMessage` | string | Extra context inserted into email/webhook templates. |
 
-**First time on Windows**, grant URL ACL (elevated PowerShell/cmd):
+### Scheduler & monitoring options
 
-```powershell
-netsh http add urlacl url=http://+:5058/ user=Everyone
+- `Scheduler.PollSeconds` — how often the scheduler checks for due jobs.
+- `Scheduler.MaxParallelism` — global cap on concurrent job executions.
+- `Scheduler.DefaultTimeZone` — fallback time zone for jobs without one.
+- `Monitoring.HttpPrefixes` — prefixes for the built‑in HTTP server.
+- `Monitoring.AdminKey` — required (as the `X-Admin-Key` header) for Job Builder write APIs.
+
+### Cron quick reference
+
+```
+┌───────── minute (0-59)
+│ ┌─────── hour (0-23)
+│ │ ┌───── day of month (1-31)
+│ │ │ ┌─── month (1-12)
+│ │ │ │ ┌─ day of week (0-6, Sun=0)
+* * * * *
 ```
 
-Use a browser or `curl http://localhost:5058/` to see recent runs, durations, exit codes, and consecutive failures.
+| Expression | Meaning |
+| --- | --- |
+| `0 0 * * *` | Daily at midnight |
+| `*/15 * * * *` | Every 15 minutes |
+| `0 */4 * * *` | Every 4 hours |
+| `40 23 * * 1-5` | 23:40, Monday–Friday |
 
-### New in v2.9: Scheduler Health Monitoring
+Use [crontab.guru](https://crontab.guru/) to experiment, or the dashboard's **Preview** button to see the next runs.
 
-The health endpoint now includes a `schedulerHealth` section providing real-time visibility into the scheduler loop:
+## 📡 HTTP API
+
+| Method & path | Description |
+| --- | --- |
+| `GET /` | HTML monitoring dashboard. |
+| `GET /api/health` | Execution history, KPIs, and scheduler heartbeat (JSON). |
+| `GET /api/logs?tailKb=128` | Last *N* KB of the newest log file (`text/plain`). |
+| `GET /api/jobs` | List current jobs from config. |
+| `POST /api/jobs/validateCron` | Body `{ "cron": "...", "timeZone": "..." }` → next runs preview. |
+| `POST /api/jobs` | Create a job. |
+| `PUT /api/jobs/{id}` | Update a job by id. |
+| `DELETE /api/jobs/{id}` | Delete a job by id. |
+
+Write endpoints (`POST`/`PUT`/`DELETE`) require the header `X-Admin-Key: <Monitoring.AdminKey>`. A lowercase alias `POST /api/jobs/validatecron` is also accepted.
+
+### Scheduler health (`/api/health`)
 
 ```json
 {
@@ -465,28 +242,21 @@ The health endpoint now includes a `schedulerHealth` section providing real-time
 }
 ```
 
-**Fields:**
-- `healthy` – `true` if scheduler loop ran recently without errors
-- `lastHeartbeat` – UTC timestamp of last successful scheduler iteration
-- `secondsSinceHeartbeat` – Time elapsed since last heartbeat
-- `consecutiveErrors` – Count of consecutive scheduler failures (triggers critical alerts at 3+)
-- `pollIntervalSeconds` – Configured poll interval from `Scheduler.PollSeconds`
+Alert if `healthy = false` or `consecutiveErrors >= 3`, and watch that `secondsSinceHeartbeat` stays below `3 × pollIntervalSeconds`.
 
-**Monitoring Tips:**
-- Alert if `healthy = false` or `consecutiveErrors > 0`
-- Track `secondsSinceHeartbeat` – should be < 3× `pollIntervalSeconds`
-- Critical: investigate immediately if `consecutiveErrors >= 3`
+## 📊 Dashboard
 
-## 🛡️ Operational guidance
+Open the root URL for a self‑contained UI that shows:
 
-- Group mutually‑exclusive jobs by the same `ConcurrencyKey` (e.g., `"db-backups"`, `"reports"`), and set `AllowParallelRuns=false`.
-- Start with `MaxParallelism = 1`; increase gradually while watching durations in the health endpoint.
-- Set `MaxRuntimeMinutes` to auto‑recover from stuck processes.
-- Configure both **Webhook** (chat/ops) and **Email** (audit) notifiers for redundancy.
+- **KPI cards** — Events, OK, Failed, Avg Duration.
+- **Scheduled Jobs** — cron, time zone, concurrency key, next run (job TZ, hover for UTC).
+- **Recent Executions** — exit code, duration, status (OK / FAIL / Skipped (lock)), in local time.
+- **Service Logs (tail)** — live tail with follow & size selector.
+- **Job Builder** — the **“+ New job”** wizard creates jobs via the API with a cron preview (requires `Monitoring.AdminKey`).
 
-## 🧪 Examples
+## 🧪 Recipes
 
-**Run a PowerShell script every hour, only one at a time, kill after 20 minutes:**
+**Run a script hourly, one at a time, killed after 20 min:**
 
 ```json
 {
@@ -501,343 +271,100 @@ The health endpoint now includes a `schedulerHealth` section providing real-time
 }
 ```
 
-**Two independent maintenance tasks concurrently, different keys:**
+**Two independent tasks that may run concurrently (different keys):**
 
 ```json
 { "Id": "cache-warm", "Command": "C:\\Jobs\\Warm.exe", "CronExpression": "*/10 * * * *", "ConcurrencyKey": "cache" },
 { "Id": "log-trim",   "Command": "C:\\Jobs\\Trim.exe", "CronExpression": "*/10 * * * *", "ConcurrencyKey": "logs"  }
 ```
 
-## 📊 Dashboard: wide mode, scroll & live logs
-
-The HTML dashboard now makes better use of screen real estate and scales to large histories.
-
-- **Wide mode** toggle to expand content to ~96% viewport width.
-- **Sticky headers** with **vertical & horizontal scroll** for both *Scheduled Jobs* and *Recent Executions* tables.
-- **KPI cards**: Events, OK, Failed, Avg Duration — fed from `/api/health`.
-- **Service Logs (tail)** card shows the tail of the latest log file and auto-refreshes.
-
-### Logs API
-The dashboard calls a new endpoint to read the tail of the service logs:
-
-- `GET /api/logs?tailKb=128` → returns the last `tailKb` KB of the newest log file.
-- Searches common locations: app base folder, `/log`, `/logs` (e.g., `log_*.txt` or any `*.txt` inside those dirs).
-- Response content type: `text/plain; charset=utf-8`.
-
-> Tip: use **Follow** to auto-scroll as new log lines appear, and **Copy** to put the visible tail into the clipboard.
-
-## 🏃 Detached jobs (fire‑and‑forget)
-
-If a command should *launch and keep running* (daemon-style), you can start it without blocking the scheduler:
+**Detached / fire‑and‑forget (launch a daemon without blocking the scheduler):**
 
 ```json
 {
-  "Id": "SistemaAutomatizadoDashboard",
-  "Command": "cmd /c \"pushd C:\\\\Apps\\\\SistemaAutomatizadoDashboard && start \\\"\\\" /b \\\"%ProgramFiles%\\\\nodejs\\\\node.exe\\\" src\\\\main.js process\"",
+  "Id": "DashboardPipeline",
+  "Command": "cmd /c \"pushd C:\\\\Apps\\\\Dashboard && start \\\"\\\" /b \\\"%ProgramFiles%\\\\nodejs\\\\node.exe\\\" src\\\\main.js process\"",
   "CronExpression": "40 23 * * 1-5",
   "TimeZone": "Eastern Standard Time",
-  "Enabled": true,
   "AllowParallelRuns": false,
   "ConcurrencyKey": "dashboard",
   "MaxRuntimeMinutes": 5,
-  "AlertOnFail": true,
   "CaptureOutput": false,
   "QuietStartLog": true,
-  "CustomAlertMessage": "Dashboard pipeline kicked off; refer to the app’s own logs for runtime details."
+  "CustomAlertMessage": "Pipeline kicked off; see the app's own logs for runtime details."
 }
 ```
 
-Why:
+`start "" /b …` returns immediately, so the scheduler isn't blocked. Keep `CaptureOutput: false` (the app handles its own logging). If overlap is risky, guard with a PID/lock inside your app.
 
-- `start "" /b …` spawns the process and returns immediately — no scheduler blocking.
-- Keep `CaptureOutput: false` (your app handles logging) and a small `MaxRuntimeMinutes` (detached runs don’t need it).
-- If overlap is risky, implement a lock/guard inside your app (PID/lock file or mutual exclusion in your code).
+## 🪵 Logging
 
-## 🔧 Job Builder (Dashboard)
+Logs are written to the `Logs` directory (the API also reads from the app base, `log/`, or `logs/`):
 
-From the dashboard, click **“+ New job”** to open the wizard. You can:
-- set **Id**, **Command**, **TimeZone**, **ConcurrencyKey**, **AllowParallelRuns**, **MaxRuntimeMinutes**, `CaptureOutput`, `QuietStartLog`, `AlertOnFail`, and **CustomAlertMessage**.
-- enter a **Cron expression** and click **Preview** to see the **next 5 UTC** runs (server-side validate).
-- save the job (atomic write to `appsettings.json`), and the service auto-reloads the schedule.
+- Daily files (`log_yyyy-MM-dd.txt`), rotated after 30 days, 10 MB cap per file.
+- Failure summaries are always written, even when `CaptureOutput = false`.
 
-### Security
-Write endpoints require a header **`X-Admin-Key`**. Set it in your config:
-```json
-{
-  "Monitoring": {
-    "AdminKey": "put-a-strong-random-key-here"
-  }
-}
+```
+2025-02-23 14:30:15 [Information] Service started
+2025-02-23 14:30:16 [Information] Loaded 3 commands from configuration
+2025-02-23 14:30:20 [Information] Starting command execution: ...
 ```
 
-### APIs
-- `GET  /api/jobs` - list current jobs (raw from config)
-- `POST /api/jobs/validateCron` - body: `{ "cron": "*/5 * * * *", "timeZone": "Eastern Standard Time" }`
-- `POST /api/jobs` - create job (body is the job JSON)
-- `PUT  /api/jobs/{id}` - update by id
-- `DELETE /api/jobs/{id}` - delete by id
+## 🛠️ Project structure
 
-Aliases: `POST /api/jobs/validatecron` (lowercase) is also accepted.
-
-All write calls must include the header: `X-Admin-Key: <your-key>`.
-
-### Example job JSON (Node task, Mon–Fri 23:40 EST)
-```json
-{
-  "Id": "SistemaAutomatizadoDashboard",
-  "Command": "cmd /c \"pushd C:\\\\Apps\\\\SistemaAutomatizadoDashboard && \\\"%ProgramFiles%\\\\nodejs\\\\node.exe\\\" src\\\\main.js process\"",
-  "CronExpression": "40 23 * * 1-5",
-  "TimeZone": "Eastern Standard Time",
-  "Enabled": true,
-  "AllowParallelRuns": false,
-  "ConcurrencyKey": "dashboard",
-  "MaxRuntimeMinutes": 5,
-  "AlertOnFail": true,
-  "CaptureOutput": false,
-  "QuietStartLog": true,
-  "CustomAlertMessage": "Dashboard pipeline kicked off; refer to the app’s own logs for runtime details."
-}
+```
+RunCommandsService/
+├─ Program.cs                  # Host setup (Windows Service, DI, logging)
+├─ CommandExecutorService.cs   # Scheduler/executor core (cron, concurrency, timeout)
+├─ Monitoring.cs               # HTTP dashboard + /api/* endpoints (incl. Job Builder)
+├─ ConcurrencyManager.cs       # Keyed lock to prevent overlapping runs
+├─ SchedulerOptions.cs         # Scheduler configuration model
+├─ TimeZoneHelper.cs           # IANA ↔ Windows time-zone resolution
+├─ FileLogger.cs               # Rolling daily file logger
+├─ WebhookNotifier.cs          # Optional webhook alert notifier (IAlertNotifier)
+├─ HealthHttpServerService.cs  # Back-compat no-op hosted service
+├─ dashboard.html              # Standalone dashboard UI
+├─ appsettings.json            # Configuration
+└─ Logs/                       # (runtime) log directory
 ```
 
-## 🛑 Graceful shutdown & cancellation
+## 🚨 Troubleshooting
 
-When the Windows Service stops (or the host restarts), the scheduler loop and any in-flight `RunCommandAsync` now treat
-**`OperationCanceledException` / `TaskCanceledException` as normal**. We avoid false “error” logs and ensure child
-processes are **killed cleanly** on timeout **or** shutdown.
+| Symptom | Things to check |
+| --- | --- |
+| Service won't start | Windows Event Viewer; valid `appsettings.json`; log directory permissions; startup validation summary in logs. |
+| Commands not executing | Cron expression validity; full command paths; startup logs for "invalid CronExpression" or timezone warnings. |
+| Config not updating | File permissions; reload events in logs (a bad edit keeps the previous config). |
+| Jobs at wrong times | Timezone warnings in startup logs; valid TZ id; `/api/health` for fallback warnings. |
+| Scheduler not responding | `schedulerHealth` in `/api/health`; `consecutiveErrors`; CRITICAL log lines; `lastHeartbeat` freshness. |
 
-## ⚙️ `appsettings.json` reference (v2.4)
+## 📈 Changelog
 
-### Top-level
-```json
-{
-  "Scheduler": {
-    "PollSeconds": 5,
-    "DefaultTimeZone": "UTC",
-    "MaxParallelism": 1
-  },
-  "Monitoring": {
-    "EnableHttpEndpoint": true,
-    "HttpPrefixes": [ "http://localhost:5058/" ],
-    "AdminKey": null,
-    "Dashboard": {
-      "Enabled": true,
-      "Title": "Scheduled Command Executor",
-      "AutoRefreshSeconds": 5,
-      "ShowRawJsonToggle": true,
-      "HtmlPath": "dashboard.html"
-    },
-    "AlertOn": {
-      "ConsecutiveFailures": 2,
-      "SlowRunMs": 120000,
-      "EmailOnFail": true,
-      "EmailOnConsecutiveFailures": true
-    },
-    "Notifiers": {
-      "Email": {
-        "Enabled": false,
-        "From": "",
-        "To": [ "ops@contoso.com" ],
-        "SmtpHost": "",
-        "SmtpPort": 587,
-        "UseSsl": true,
-        "User": "",
-        "Password": "",
-        "SubjectTemplate": "[${AlertType}] ${CommandId} (${ConsecutiveFailures}x) — ${DurationMs}ms",
-        "BodyTemplate": "Command: ${Command}\nStarted: ${StartUtc:o}\nEnded: ${EndUtc:o}\nExitCode: ${ExitCode}\nDuration: ${DurationMs}ms\nError: ${Error}\nMessage: ${CustomMessage}"
-      }
-      /* Optional: webhook example (if you wired WebhookNotifier)
-      ,"Webhook": {
-        "Enabled": true,
-        "Url": "https://example/webhook",
-        "AuthorizationHeader": "Bearer <token>"
-      }*/
-    }
-  },
+- **v2.9** — Production resilience: 80+ timezone mappings with explicit fallback warnings, startup validation report, scheduler heartbeat on `/api/health`, exponential backoff (10s→20s→40s→60s) with critical alerts after 3+ failures, protected hot‑reload, richer error context.
+- **v2.8** — DST‑correct next‑run using Cronos with a UTC base + job TZ; non‑blocking scheduler loop; `validateCron` lowercase alias and runtime parity.
+- **v2.7** — Local‑time dashboard timestamps with UTC hints; guaranteed failure summaries regardless of `CaptureOutput`.
+- **v2.6** — Edge‑to‑edge responsive dashboard, adaptive KPI grid, mobile‑friendly tables, safer Windows‑service hosting.
+- **v2.5** — No page‑level horizontal scroll, version chip, KPI cards, sortable executions, live log tail, experimental Job Builder.
+- **v2.4** — Job Builder UI + write APIs, admin key protection, graceful shutdown, expanded config docs.
+- **v2.3** — Wide mode, sticky headers, live logs panel, more robust scheduling, clean timeout/kill.
+- **v2.2** — Silent jobs (`CaptureOutput`, `QuietStartLog`).
+- **v2.1** — Templated email alerts, full HTML dashboard, camelCase API payloads.
+- **v2.0** — Health endpoint, proactive alerts, safe concurrency, runtime limits, precise scheduler, hot‑reload.
 
-  "ScheduledCommands": [
-    {
-      "Id": "example",
-      "Command": "cmd /c echo Hello",
-      "CronExpression": "*/5 * * * *",
-      "TimeZone": "UTC",
-      "Enabled": true,
-      "AllowParallelRuns": false,
-      "ConcurrencyKey": "example",
-      "MaxRuntimeMinutes": 10,
-      "AlertOnFail": true,
-      "CaptureOutput": true,
-      "QuietStartLog": false,
-      "CustomAlertMessage": "Friendly context in alerts"
-    }
-  ]
-}
-```
+## 🤝 Contributing
 
-### Per-job options
-- **Id** *(string, required)* – unique id.
-- **Command** *(string, required)* – full shell command; Windows examples often use `cmd /c "..."` with quoting.
-- **CronExpression** *(string, required)* – 5-field cron (min hour dom mon dow).
-- **TimeZone** *(string)* – **New in v2.9:** Supports 80+ IANA timezone IDs (e.g., `Asia/Tokyo`, `Australia/Sydney`) plus Windows IDs (e.g., `Eastern Standard Time`). Invalid timezones log warnings and fall back to `Scheduler.DefaultTimeZone`. See `TimeZoneHelper.cs` for full list.
-- **Enabled** *(bool)* – include/exclude from scheduling.
-- **AllowParallelRuns** *(bool)* – if `false`, jobs sharing the same **ConcurrencyKey** won't overlap.
-- **ConcurrencyKey** *(string)* – grouping key for mutual exclusion. If empty, `Id` is used.
-- **MaxRuntimeMinutes** *(int?)* – cancels and kills the process after this duration.
-- **AlertOnFail** *(bool)* – send alerts on failures (ties into Monitoring.Notifiers).
-- **CaptureOutput** *(bool)* – if `true`, stdout/stderr are captured and logged; stderr content marks the run failed.
-- **QuietStartLog** *(bool)* – suppresses the "Executing …" info log at start, useful for very frequent jobs.
-- **CustomAlertMessage** *(string)* – extra context included in email/webhook templates.
+1. Fork the repository
+2. Create a feature branch
+3. Commit your changes
+4. Push to the branch
+5. Open a Pull Request
 
-### Monitoring endpoint & dashboard
-- `Monitoring.HttpPrefixes` – list of prefixes for the built-in HTTP server (ex: `http://localhost:5058/`).
-- `GET /api/health` – dashboard data (scheduled snapshot + recent executions).
-- `GET /api/logs?tailKb=128` – returns the last *tailKb* KB of the newest log file (looks in base, `log/`, `logs/`).
+## 📜 License
 
-### Job Builder write APIs (require `Monitoring.AdminKey`)
-- `GET  /api/jobs`
-- `POST /api/jobs/validateCron`
-- `POST /api/jobs`
-- `PUT  /api/jobs/{id}`
-- `DELETE /api/jobs/{id}`
+[MIT](LICENSE) — free to use in your own projects.
 
-## Changelog
+## 🔗 Related resources
 
-## 🚀 What's new (v2.9) — Production Resilience & Enhanced Observability
-
-**Timezone Management Overhaul:**
-- **80+ timezone support** – Expanded IANA→Windows mapping from 12 to 80+ zones covering:
-  - All North American zones (US, Canada, Mexico, Caribbean)
-  - Complete European coverage (Western, Central, Eastern)
-  - Asia-Pacific (Tokyo, Sydney, Singapore, Hong Kong, Seoul, etc.)
-  - South America, Middle East, and Africa
-- **Explicit warnings** – Unmapped timezones now log warnings when falling back to UTC (no more silent failures)
-- **Validation API** – Job Builder and manual configuration now validate timezone IDs with helpful error messages
-- **Detailed diagnostics** – New `TimeZoneResult` class tracks original ID, resolved ID, and fallback status
-
-**Startup Validation & Reporting:**
-- **Comprehensive summary** on service start showing:
-  ```
-  Configuration loaded: 5 total jobs | 3 valid & enabled | 1 disabled | 1 invalid cron | 1 timezone warnings
-
-  Configuration validation issues found:
-    • Job 'BackupJob': invalid CronExpression — Expected 5 or 6 fields
-    • Job 'ReportGen': Invalid timezone 'Asia/Invalid' → using UTC
-  ```
-- **Critical warnings** when no valid enabled jobs exist
-- **Clear visibility** into configuration problems before they cause runtime issues
-
-**Scheduler Health Monitoring:**
-- **Real-time heartbeat** – Tracks last successful scheduler loop iteration
-- **Health endpoint** – `/api/health` now includes `schedulerHealth` section with:
-  - `healthy` boolean
-  - `lastHeartbeat` UTC timestamp
-  - `secondsSinceHeartbeat` metric
-  - `consecutiveErrors` counter
-- **Early warning system** – Detect scheduler issues before complete failures
-
-**Enhanced Error Handling:**
-- **Exponential backoff** – Scheduler errors use progressive delays: 10s → 20s → 40s → 60s (max)
-- **Critical alerts** – Automatic CRITICAL log level after 3+ consecutive scheduler failures
-- **Detailed context** – All errors now include exception types, inner exceptions, and command details
-- **Protected hot-reload** – Configuration reload errors don't crash service; previous config remains active
-
-**Production Best Practices:**
-- **Task isolation verified** – Confirmed excellent per-task error isolation (one failure doesn't affect others)
-- **Better diagnostics** – Enhanced logging throughout with structured error information
-- **Failure resilience** – Service continues operating even with invalid jobs or configuration errors
-
-**Supported Timezones (New):**
-Asia/Tokyo, Australia/Sydney, Australia/Melbourne, Europe/Berlin, Europe/Madrid, Asia/Singapore, Asia/Shanghai, Asia/Hong_Kong, Pacific/Auckland, America/Sao_Paulo, America/Buenos_Aires, Asia/Dubai, Asia/Kolkata, and 60+ more.
-
-See `IMPROVEMENTS_SUMMARY.md` for complete technical details.
-
-## 🐛 What's new (v2.8)
-
-* Time zone correctness — Next-run is computed with Cronos using a UTC base time plus the job's `TimeZone`. Fixes wrong schedules when the machine TZ differs from the job TZ and across DST transitions.
-* Loop resilience — The scheduler no longer blocks on job execution. Jobs are dispatched in the background; concurrency keys and `MaxParallelism` still apply.
-* Cron preview parity — `POST /api/jobs/validateCron` uses the same logic as runtime and accepts lowercase alias `/api/jobs/validatecron`.
-* Quick preview via curl:
-  - `curl -H "Content-Type: application/json" -d '{ "cron":"*/5 * * * *", "timeZone":"Eastern Standard Time" }' http://localhost:5058/api/jobs/validateCron`
-  - `curl -H "Content-Type: application/json" -d '{ "cron":"40 23 * * 1-5", "timeZone":"America/Santo_Domingo" }' http://localhost:5058/api/jobs/validatecron`
-
-## 🐛 What's new (v2.7)
-
-* **Local-time dashboard timestamps** - Recent executions, schedule tables, and status chips now render in the viewer's local time while retaining UTC hints on hover.
-* **Wrapped monospace date columns** - `.mono wrap` styling keeps long timestamps readable without horizontal scrolling in jobs and executions.
-* **Guaranteed failure summaries** - Every unsuccessful run writes a concise error log even when `CaptureOutput=false`, so failures never go unnoticed.
-
-## 🌐 What’s new (v2.6)
-
-* **Edge-to-edge dashboard layout** — wrappers now use 95% of the viewport width with responsive padding, eliminating wasted gutters on wide screens.
-* **Adaptive KPI grid** — cards auto-fit via CSS so all stats remain visible on tablets and phones with no horizontal scroll.
-* **Readable tables on mobile** — table cells wrap cron/time-zone text while keeping ID columns monospace; the toolbar stacks vertically with a fluid search box.
-* **Safer Windows service integration** — Program.cs aliases `WindowsServiceHelpers` to avoid naming conflicts with `Microsoft.Extensions.Hosting.WindowsServices`.
-
-## ✅ What’s new (v2.5)
-
-* **Responsive layout** — no page-level horizontal scrolling. Cells ellipsize, sections scroll within themselves.
-* **Version chip** — visible at the top (e.g., `v2.4.0+…`) so testers know what’s deployed.
-* **Cards** — Events, OK, Failed, Avg Duration.
-* **Scheduled Jobs** — shows cron, TZ, key, parallel/timeout, **Next run in job’s TZ** (hover to see UTC).
-* **Recent Executions** — sortable list with exit code, duration, status (OK / FAIL / Skipped (lock)).
-* **Service Logs (tail)** — live tail with follow & size selector; wraps long lines.
-* **Raw JSON** — button toggles pretty payload for quick diagnostics.
-* **Job Builder (experimental)** — modal to create jobs via API, with cron preview (`/api/jobs/validateCron`). Requires `Monitoring.AdminKey`.
-
-## ✨ What’s new (v2.4)
-
-- **Job Builder in the dashboard** – create jobs from the UI, with cron builder and **live next-run preview**.
-- **Write APIs** – `/api/jobs` (create/update/delete) and `/api/jobs/validateCron` (preview next occurrences).
-- **Admin key** – protect write endpoints with `X-Admin-Key` (see config below).
-- **Graceful shutdown** – the scheduler treats service shutdown as normal (no error logs), and kills child processes politely.
-- **Docs** – expanded `appsettings.json` reference with all per-job flags (`CaptureOutput`, `QuietStartLog`, `AllowParallelRuns`, `ConcurrencyKey`, `MaxRuntimeMinutes`, `CustomAlertMessage`, `TimeZone`) and monitoring options.
-
-## 🚀 What’s new (v2.3)
-
-- **Dashboard UX upgrade** — wide mode toggle, sticky table headers, and both vertical & horizontal scroll for big lists.
-- **KPI cards** restored and styled (Events, OK, Failed, Avg Duration).
-- **Live Service Logs** panel with tail sizes, follow, and copy to clipboard (backs `/api/logs`).
-- **More robust scheduling** — next occurrence is computed from the *due* instant, reducing missed ticks under load.
-- **Reliable process handling** — clean timeout/kill with `WaitForExitAsync`.
-- **Docs** — added recipes for **silent jobs** and **detached “fire‑and‑forget”** execution.
-
-## 🔔 What’s new (v2.2)
-
-- **Silent jobs**: per-task flags `CaptureOutput` and `QuietStartLog` let you run jobs without streaming their stdout/stderr into the service logs.
-- **No behavior change by default**: both flags default to `CaptureOutput: true`, `QuietStartLog: false` to preserve existing behavior.
-- **Observability intact**: we still track start/end time, duration, **exit code**, alerts, and show results on the dashboard.
-- **Docs & examples**: added a dedicated “Silent jobs” section with ready-to-copy JSON.
-
-### Quick example
-```json
-{
-  "Id": "SistemaAutomatizadoDashboard",
-  "Command": "cmd /c \"pushd C:\\\\Apps\\\\SistemaAutomatizadoDashboard && \\\"%ProgramFiles%\\\\nodejs\\\\node.exe\\\" src\\\\main.js process\"",
-  "CronExpression": "40 23 * * 1-5",
-  "TimeZone": "Eastern Standard Time",
-  "Enabled": true,
-  "AllowParallelRuns": false,
-  "ConcurrencyKey": "dashboard",
-  "MaxRuntimeMinutes": 60,
-  "AlertOnFail": true,
-  "CaptureOutput": false,
-  "QuietStartLog": true,
-  "CustomAlertMessage": "SistemaAutomatizadoDashboard failed on server; check the app’s own logs for details."
-}
-```
-## ✅ What’s new (v2.1)
-
-- **Personalized email alerts** — Subject/body **templates** with tokens and per‑job `CustomAlertMessage`.
-- **Full HTML monitoring dashboard** at `/` plus `GET /api/health` JSON; now loads UI from an external `Monitoring.Dashboard.HtmlPath`.
-- **Polished UI** — dark/light theme, KPIs, search, sorting, pause auto‑refresh.
-- **More examples & use cases** for real‑world patterns (locking, rate‑limit staggering, time zones, long‑running guardrails).
-- **API payload** standardized to **camelCase** keys for friendlier front‑end consumption.
-- 
-## ✅ What’s new (v2)
-
-- **Monitoring & Health** — lightweight HTTP health endpoint (JSON) with rolling execution history.
-- **Proactive Alerts** — Email and/or Webhook (Slack/Teams/Discord) on **consecutive failures** and **slow runs**.
-- **Safe Concurrency** — global `MaxParallelism` plus per-job `ConcurrencyKey` locks to avoid overlapping tasks on shared resources.
-- **Runtime Limits** — per-job `MaxRuntimeMinutes` auto‑kills hung processes.
-- **Precise Scheduler** — uses Cronos to compute the next exact occurrence and prevent duplicate triggers.
-- **Hot‑reload** — changes to `appsettings.json` are picked up without restarting the service.
-
+- [Windows Services documentation](https://learn.microsoft.com/dotnet/framework/windows-services/)
+- [Cron expression generator (crontab.guru)](https://crontab.guru/)
+- [.NET documentation](https://learn.microsoft.com/dotnet/core/)
