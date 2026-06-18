@@ -14,12 +14,9 @@ A lightweight **.NET 9 Windows Service** that runs commands on cron schedules, w
 
 ## 📸 Dashboard preview
 
-<!-- Add a screenshot or short GIF of the running dashboard at docs/dashboard.png,
-     then uncomment the line below. A 5s GIF showing the KPI cards, the jobs
-     table, and the "+ New job" wizard makes the strongest first impression. -->
-<!-- ![Scheduled Command Executor dashboard](docs/dashboard.png) -->
+![Scheduled Command Executor dashboard](docs/dashboard.png)
 
-> _Screenshot coming soon — drop `docs/dashboard.png` and uncomment the image above._
+*Live dashboard: KPI cards, scheduled jobs with next-run times, recent executions, and a tail of the service logs — all in your local time.*
 
 ## 🔍 Overview
 
