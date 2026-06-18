@@ -12,6 +12,15 @@ A lightweight **.NET 9 Windows Service** that runs commands on cron schedules, w
 
 ---
 
+## 📸 Dashboard preview
+
+<!-- Add a screenshot or short GIF of the running dashboard at docs/dashboard.png,
+     then uncomment the line below. A 5s GIF showing the KPI cards, the jobs
+     table, and the "+ New job" wizard makes the strongest first impression. -->
+<!-- ![Scheduled Command Executor dashboard](docs/dashboard.png) -->
+
+> _Screenshot coming soon — drop `docs/dashboard.png` and uncomment the image above._
+
 ## 🔍 Overview
 
 This service lets administrators:
@@ -58,6 +67,8 @@ flowchart TB
         N --> Email & Webhook
     end
 ```
+
+> 🗺️ An interactive, auto-generated architecture map (via [CodeBoarding](https://github.com/CodeBoarding/CodeBoarding)) will be linked here soon.
 
 ## 📋 Prerequisites
 
