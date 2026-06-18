@@ -363,3 +363,6 @@ MigrationBackup/
 FodyWeavers.xsd
 # Stray build-error dumps
 errors.txt
+
+# Personal email drafts (not for the public repo)
+reply-to-svilen.html

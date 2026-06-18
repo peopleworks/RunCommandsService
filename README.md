@@ -2,6 +2,7 @@
 
 A lightweight **.NET 9 Windows Service** that runs commands on cron schedules, with concurrency control, per‑job timeouts, a live monitoring dashboard, optional email/webhook alerts, and a simple JSON config with hot‑reload.
 
+[![build](https://github.com/peopleworks/RunCommandsService/actions/workflows/build.yml/badge.svg)](https://github.com/peopleworks/RunCommandsService/actions/workflows/build.yml)
 ![.NET](https://img.shields.io/badge/.NET-9.0-512BD4)
 ![Platform](https://img.shields.io/badge/platform-Windows-0078D6)
 ![License](https://img.shields.io/badge/license-MIT-green)
