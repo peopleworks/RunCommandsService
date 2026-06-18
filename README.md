@@ -317,7 +317,6 @@ RunCommandsService/
 ├─ Program.cs                  # Host setup (Windows Service, DI, logging)
 ├─ CommandExecutorService.cs   # Scheduler/executor core (cron, concurrency, timeout)
 ├─ Monitoring.cs               # HTTP dashboard + /api/* endpoints (incl. Job Builder)
-├─ ConcurrencyManager.cs       # Keyed lock to prevent overlapping runs
 ├─ SchedulerOptions.cs         # Scheduler configuration model
 ├─ TimeZoneHelper.cs           # IANA ↔ Windows time-zone resolution
 ├─ FileLogger.cs               # Rolling daily file logger
