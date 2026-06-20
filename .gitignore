@@ -366,3 +366,6 @@ errors.txt
 
 # Personal email drafts (not for the public repo)
 reply-to-svilen.html
+
+# CodeBoarding working artifacts (caches, logs, raw analysis) — the map lives in the README
+.codeboarding/

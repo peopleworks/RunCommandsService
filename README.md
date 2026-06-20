@@ -53,7 +53,7 @@ flowchart TB
         C --> E
         E --> F[Cron Scheduler]
         F --> G[Process Executor]
-        E --> CK[ConcurrencyManager]
+        E --> CK[AsyncKeyedLock concurrency]
     end
 
     subgraph Observability
@@ -65,7 +65,39 @@ flowchart TB
     end
 ```
 
-> 🗺️ An interactive, auto-generated architecture map (via [CodeBoarding](https://github.com/CodeBoarding/CodeBoarding)) will be linked here soon.
+### 🗺️ Component map
+
+> Auto-generated from the source by [CodeBoarding](https://github.com/CodeBoarding/CodeBoarding) (reasoning by Claude). Five components and how they collaborate at runtime:
+
+```mermaid
+flowchart TD
+    Host["🧩 Service Host & Bootstrap<br/>DI container · UseWindowsService"]
+    Sched["⏰ Cron Scheduler &<br/>Process Executor"]
+    Mon["📊 Execution Monitor &<br/>Event Store"]
+    Alert["🔔 Alert Notification Pipeline"]
+    Http["🌐 HTTP Monitoring Server &<br/>Job API"]
+    Out["📧 Email · 🔗 Webhook"]
+
+    Host -->|starts hosted service| Sched
+    Host -->|starts hosted service| Http
+    Host -->|singleton + inject| Mon
+    Host -->|wires notifiers| Alert
+
+    Sched -->|pushes events + snapshots| Mon
+    Sched -.->|health-provider callback| Mon
+    Mon -->|dispatches alerts| Alert
+    Alert -->|fan-out| Out
+    Http -->|reads health payload| Mon
+    Http -->|hot-reload jobs| Sched
+```
+
+| Component | Responsibility |
+| --- | --- |
+| ⏰ **Cron Scheduler & Process Executor** | Polls every `PollSeconds`, computes DST-safe next-run times via Cronos, runs due jobs as `cmd.exe` processes with two-layer concurrency, and hot-reloads jobs from `appsettings.json`. |
+| 📊 **Execution Monitor & Event Store** | Central event sink: rolling 5,000-event queue, per-job consecutive-failure tracking, a live schedule snapshot, and the health payload served to the API. |
+| 🔔 **Alert Notification Pipeline** | `CompositeNotifier` fans alerts out to Email (SMTP) and Webhook (HTTP), each fault-isolated so one channel failure can't block the others. |
+| 🌐 **HTTP Monitoring Server & Job API** | Embedded `HttpListener` serving the live dashboard, `/api/health`, a log-tail endpoint, and an admin-key-gated CRUD REST API with atomic config writes. |
+| 🧩 **Service Host & Bootstrap** | Composition root: wires the DI container, registers the hosted services, installs the file logger, and integrates with the Windows SCM. |
 
 ## 📋 Prerequisites
 
@@ -358,6 +390,19 @@ RunCommandsService/
 - **v2.2** — Silent jobs (`CaptureOutput`, `QuietStartLog`).
 - **v2.1** — Templated email alerts, full HTML dashboard, camelCase API payloads.
 - **v2.0** — Health endpoint, proactive alerts, safe concurrency, runtime limits, precise scheduler, hot‑reload.
+
+## 🗺️ Roadmap
+
+Ideas on deck — contributions welcome (look for the [good first issues](../../issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)):
+
+- [ ] **Run history & trends** — persist executions to SQLite with simple trend charts on the dashboard
+- [ ] **More notifiers** — native Telegram / Discord / Microsoft Teams alerts alongside email + webhook
+- [ ] **`/metrics` endpoint** — Prometheus-style metrics for scraping
+- [ ] **Dashboard auth** — optional login in front of the dashboard and write APIs
+- [ ] **Job import / export** — share job sets as portable JSON
+- [x] **Auto-generated architecture map** — via [CodeBoarding](https://github.com/CodeBoarding/CodeBoarding) (see the [component map](#️-component-map) above)
+
+Have an idea? [Open a feature request](../../issues/new?template=feature_request.md) or start a [discussion](../../discussions).
 
 ## 🤝 Contributing
 
