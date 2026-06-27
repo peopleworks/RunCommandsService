@@ -116,6 +116,27 @@ dotnet run --project .\RunCommandsService\RunCommandsService.csproj
 
 Then open <http://localhost:5058/> for the dashboard or `curl http://localhost:5058/api/health`.
 
+**Validate the configuration without running anything (`--validate`):**
+
+```powershell
+dotnet run --project .\RunCommandsService\RunCommandsService.csproj -- --validate
+```
+
+This loads `appsettings.json`, checks every job in `ScheduledCommands` (required `Id`/`Command`, a
+parseable `CronExpression`, and a resolvable `TimeZone`), prints a per-job report, and **executes no
+commands**. It exits with code `0` when all jobs are valid and a non-zero code otherwise — handy as a
+pre-deploy or CI gate. `--check` is accepted as an alias.
+
+```text
+Configuration validation report
+===============================
+  [OK]   Notepad
+  [FAIL] SchedulerSelfTest
+           - invalid CronExpression — ...
+-------------------------------
+2 job(s): 1 valid, 1 invalid.
+```
+
 ## 🧩 Install as a Windows Service (recommended)
 
 **1) Publish the binaries**
