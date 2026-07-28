@@ -9,7 +9,33 @@ using ServiceHelpers = RunCommandsService.WindowsServiceHelpers;
 
 public class Program
 {
-    public static void Main(string[] args) => CreateHostBuilder(args).Build().Run();
+    public static int Main(string[] args)
+    {
+        // --validate / --check: validate the configuration and exit without executing anything.
+        if (args != null && Array.Exists(args, a =>
+                string.Equals(a, "--validate", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(a, "--check", StringComparison.OrdinalIgnoreCase)))
+        {
+            return RunValidation(args);
+        }
+
+        CreateHostBuilder(args).Build().Run();
+        return 0;
+    }
+
+    private static int RunValidation(string[] args)
+    {
+        var configuration = new ConfigurationBuilder()
+            .SetBasePath(AppContext.BaseDirectory)
+            .AddJsonFile("appsettings.json", optional: false, reloadOnChange: false)
+            .AddEnvironmentVariables()
+            .AddCommandLine(args)
+            .Build();
+
+        var report = ConfigValidator.Validate(configuration);
+        Console.Write(ConfigValidator.FormatReport(report));
+        return report.AllValid ? 0 : 1;
+    }
 
     public static IHostBuilder CreateHostBuilder(string[] args) =>
         Host.CreateDefaultBuilder(args) // loads appsettings.json with reloadOnChange:true
