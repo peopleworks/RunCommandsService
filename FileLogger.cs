@@ -1,10 +1,16 @@
-﻿using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging;
+using System;
+using System.IO;
+using System.Linq;
+
+namespace RunCommandsService;
 
 public class FileLogger : ILogger
 {
     private readonly string _name;
     private readonly FileLoggerOptions _options;
     private static readonly object _lock = new object();
+    private static DateTime _lastCleanupUtc = DateTime.MinValue;
 
     public FileLogger(string name, FileLoggerOptions options)
     {
@@ -12,79 +18,112 @@ public class FileLogger : ILogger
         _options = options;
     }
 
-    public IDisposable BeginScope<TState>(TState state) => null;
+    public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
-    public bool IsEnabled(LogLevel logLevel) => logLevel >= _options.MinLevel;
+    public bool IsEnabled(LogLevel logLevel) => logLevel != LogLevel.None && logLevel >= _options.MinLevel;
 
     public void Log<TState>(
         LogLevel logLevel,
         EventId eventId,
         TState state,
-        Exception exception,
-        Func<TState, Exception, string> formatter)
+        Exception? exception,
+        Func<TState, Exception?, string> formatter)
     {
-        if(!IsEnabled(logLevel))
+        if (!IsEnabled(logLevel))
             return;
 
         var logDirectory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, _options.LogDirectory);
-        Directory.CreateDirectory(logDirectory);
-
-        var logFile = Path.Combine(logDirectory, $"log_{DateTime.Now:yyyy-MM-dd}.txt");
-
-        // Rotate by size if needed
-        if(_options.FileSizeLimit > 0 && File.Exists(logFile))
-        {
-            try
-            {
-                var fi = new FileInfo(logFile);
-                if(fi.Length >= _options.FileSizeLimit)
-                {
-                    var rolled = Path.Combine(logDirectory, $"log_{DateTime.Now:yyyy-MM-dd}_{DateTime.Now:HHmmss}.txt");
-                    File.Move(logFile, rolled, overwrite: true);
-                }
-            }
-            catch { /* ignore rotation errors */ }
-        }
-        var formattedMessage = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} [{logLevel}] {formatter(state, exception)}";
-        if(exception != null)
+        var message = formatter(state, exception);
+        var formattedMessage = $"{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} [{logLevel}] {message}";
+        if (exception != null)
         {
             formattedMessage += $"\nException: {exception}\nStackTrace: {exception.StackTrace}";
         }
 
-        lock(_lock)
-        {
-            File.AppendAllText(logFile, formattedMessage + Environment.NewLine);
-        }
-
-        // Cleanup old logs
-        CleanupOldLogs(logDirectory);
-    }
-
-    private void CleanupOldLogs(string logDirectory)
-    {
-        var files = Directory.GetFiles(logDirectory, "log_*.txt")
-            .Select(f => new FileInfo(f))
-            .Where(f => f.LastWriteTime < DateTime.Now.AddDays(-_options.RetainDays));
-
-        foreach(var file in files)
+        lock (_lock)
         {
             try
             {
-                file.Delete();
-            } catch
+                if (!Directory.Exists(logDirectory))
+                {
+                    Directory.CreateDirectory(logDirectory);
+                }
+
+                var todayStr = DateTime.UtcNow.ToString("yyyy-MM-dd");
+                var logFile = Path.Combine(logDirectory, $"log_{todayStr}.txt");
+
+                // Check size limit and rotate if needed
+                if (_options.FileSizeLimit > 0 && File.Exists(logFile))
+                {
+                    var fi = new FileInfo(logFile);
+                    if (fi.Length >= _options.FileSizeLimit)
+                    {
+                        var timestamp = DateTime.UtcNow.ToString("HHmmss_fff");
+                        var rolled = Path.Combine(logDirectory, $"log_{todayStr}_{timestamp}.txt");
+                        try
+                        {
+                            File.Move(logFile, rolled, overwrite: true);
+                        }
+                        catch
+                        {
+                            // If move fails, continue appending to current logFile
+                        }
+                    }
+                }
+
+                File.AppendAllText(logFile, formattedMessage + Environment.NewLine);
+
+                // Run cleanup periodically (at most once every 1 hour)
+                if ((DateTime.UtcNow - _lastCleanupUtc).TotalHours >= 1)
+                {
+                    _lastCleanupUtc = DateTime.UtcNow;
+                    CleanupOldLogsInternal(logDirectory);
+                }
+            }
+            catch
             {
-            } // Ignore deletion errors
+                // Prevent logger from throwing to callers
+            }
+        }
+    }
+
+    private void CleanupOldLogsInternal(string logDirectory)
+    {
+        if (_options.RetainDays <= 0) return;
+
+        try
+        {
+            var cutoff = DateTime.UtcNow.AddDays(-_options.RetainDays);
+            var files = Directory.GetFiles(logDirectory, "log_*.txt")
+                .Select(f => new FileInfo(f))
+                .Where(f => f.LastWriteTimeUtc < cutoff);
+
+            foreach (var file in files)
+            {
+                try
+                {
+                    file.Delete();
+                }
+                catch
+                {
+                    // Ignore deletion errors for locked files
+                }
+            }
+        }
+        catch
+        {
+            // Ignore directory search errors
         }
     }
 }
 
 public class FileLoggerOptions
 {
-    public string LogDirectory { get; set; }
+    public string LogDirectory { get; set; } = "Logs";
 
-    public long FileSizeLimit { get; set; }
+    public long FileSizeLimit { get; set; } = 10 * 1024 * 1024; // 10MB default
 
-    public int RetainDays { get; set; }
+    public int RetainDays { get; set; } = 30;
 
     public LogLevel MinLevel { get; set; } = LogLevel.Information;
 }
@@ -93,9 +132,15 @@ public class FileLoggerProvider : ILoggerProvider
 {
     private readonly FileLoggerOptions _options;
 
-    public FileLoggerProvider(FileLoggerOptions options) { _options = options; }
+    public FileLoggerProvider(FileLoggerOptions options)
+    {
+        _options = options;
+    }
 
-    public ILogger CreateLogger(string categoryName) { return new FileLogger(categoryName, _options); }
+    public ILogger CreateLogger(string categoryName)
+    {
+        return new FileLogger(categoryName, _options);
+    }
 
     public void Dispose()
     {
