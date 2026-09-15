@@ -1,4 +1,4 @@
-﻿using Cronos;
+using Cronos;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -758,8 +758,13 @@ Message:  ${CustomMessage}";
         private bool IsAuthorized(HttpListenerContext ctx)
         {
             var expected = _options.Value.AdminKey ?? _configuration["Monitoring:AdminKey"];
+            if (SecretMasker.IsDefaultSecret(expected))
+            {
+                _logger.LogWarning("API administrative action rejected: Monitoring:AdminKey is using a default or unconfigured secret value. Please set a strong random key in configuration.");
+                return false;
+            }
             var got = ctx.Request.Headers["X-Admin-Key"];
-            return !string.IsNullOrWhiteSpace(expected) && string.Equals(expected, got, StringComparison.Ordinal);
+            return SecretMasker.FixedTimeEquals(expected, got);
         }
 
         private static string ConfigPath() => Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "appsettings.json");

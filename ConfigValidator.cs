@@ -24,20 +24,46 @@ namespace RunCommandsService
         public class ValidationReport
         {
             public List<JobValidationResult> Jobs { get; } = new List<JobValidationResult>();
+            public List<string> SecurityWarnings { get; } = new List<string>();
             public int TotalJobs => Jobs.Count;
             public int ValidJobs { get; set; }
             public int InvalidJobs { get; set; }
-            public bool AllValid => InvalidJobs == 0;
+            public bool AllValid => InvalidJobs == 0 && SecurityWarnings.Count == 0;
         }
 
-        /// <summary>Validate the ScheduledCommands section of an <see cref="IConfiguration"/>.</summary>
+        /// <summary>Validate the ScheduledCommands section and security options of an <see cref="IConfiguration"/>.</summary>
         public static ValidationReport Validate(IConfiguration configuration)
         {
             var commands = configuration.GetSection("ScheduledCommands").Get<List<ScheduledCommand>>()
                            ?? new List<ScheduledCommand>();
             var defaultTimeZone = configuration.GetSection("Scheduler").Get<SchedulerOptions>()?.DefaultTimeZone
                                   ?? "UTC";
-            return Validate(commands, defaultTimeZone);
+
+            var report = Validate(commands, defaultTimeZone);
+
+            // Security checks for default secrets
+            var enableHttp = configuration.GetValue<bool>("Monitoring:EnableHttpEndpoint");
+            var adminKey = configuration["Monitoring:AdminKey"];
+            if (enableHttp && SecretMasker.IsDefaultSecret(adminKey))
+            {
+                report.SecurityWarnings.Add("Monitoring:AdminKey is using a default or empty value. Set a strong random key before deploying.");
+            }
+
+            var emailEnabled = configuration.GetValue<bool>("Monitoring:Notifiers:Email:Enabled");
+            var emailPassword = configuration["Monitoring:Notifiers:Email:Password"];
+            if (emailEnabled && SecretMasker.IsDefaultSecret(emailPassword))
+            {
+                report.SecurityWarnings.Add("Monitoring:Notifiers:Email:Password contains a default placeholder value.");
+            }
+
+            var webhookEnabled = configuration.GetValue<bool>("Monitoring:Notifiers:Webhook:Enabled");
+            var webhookUrl = configuration["Monitoring:Notifiers:Webhook:Url"];
+            if (webhookEnabled && (SecretMasker.IsDefaultSecret(webhookUrl) || (webhookUrl != null && webhookUrl.Contains("example.com"))))
+            {
+                report.SecurityWarnings.Add("Monitoring:Notifiers:Webhook:Url is using an unconfigured example URL.");
+            }
+
+            return report;
         }
 
         /// <summary>Validate a list of jobs against a default time zone (used when a job omits one).</summary>
@@ -93,6 +119,14 @@ namespace RunCommandsService
             var sb = new StringBuilder();
             sb.AppendLine("Configuration validation report");
             sb.AppendLine("===============================");
+
+            if (report.SecurityWarnings.Count > 0)
+            {
+                sb.AppendLine("Security Warnings:");
+                foreach (var w in report.SecurityWarnings)
+                    sb.AppendLine($"  [SECURITY RISK] {w}");
+                sb.AppendLine("-------------------------------");
+            }
 
             if (report.TotalJobs == 0)
                 sb.AppendLine("No jobs found in ScheduledCommands.");
