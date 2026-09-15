@@ -111,7 +111,7 @@ flowchart TD
 
 ```powershell
 dotnet build -c Debug
-dotnet run --project .\RunCommandsService\RunCommandsService.csproj
+dotnet run --project .\RunCommandsService.csproj
 ```
 
 Then open <http://localhost:5058/> for the dashboard or `curl http://localhost:5058/api/health`.
@@ -119,7 +119,7 @@ Then open <http://localhost:5058/> for the dashboard or `curl http://localhost:5
 **Validate the configuration without running anything (`--validate`):**
 
 ```powershell
-dotnet run --project .\RunCommandsService\RunCommandsService.csproj -- --validate
+dotnet run --project .\RunCommandsService.csproj -- --validate
 ```
 
 This loads `appsettings.json`, checks every job in `ScheduledCommands` (required `Id`/`Command`, a
@@ -142,7 +142,7 @@ Configuration validation report
 **1) Publish the binaries**
 
 ```powershell
-dotnet publish .\RunCommandsService\RunCommandsService.csproj -c Release -o C:\Apps\RunCommandsService
+dotnet publish .\RunCommandsService.csproj -c Release -o C:\Apps\RunCommandsService
 ```
 
 **2) Reserve the HTTP prefix** (run PowerShell as Administrator)

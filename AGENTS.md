@@ -108,7 +108,7 @@ RunCommandsService/
 
 ```powershell
 dotnet build -c Debug
-dotnet run --project .\RunCommandsService\RunCommandsService.csproj
+dotnet run --project .\RunCommandsService.csproj
 ```
 
 ### Reserve URL (run PowerShell as Administrator)
@@ -130,7 +130,7 @@ start http://localhost:5058/
 
 ```powershell
 # Publish
-dotnet publish .\RunCommandsService\RunCommandsService.csproj -c Release -o C:\Apps\RunCommandsService
+dotnet publish .\RunCommandsService.csproj -c Release -o C:\Apps\RunCommandsService
 # Reserve for LocalSystem (if service runs as SYSTEM)
 netsh http add urlacl url=http://+:5058/ user="NT AUTHORITY\SYSTEM"
 # Install (example using sc.exe)
