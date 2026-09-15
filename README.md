@@ -244,6 +244,7 @@ Configuration lives in `appsettings.json`. A minimal example:
 | `MaxRuntimeMinutes` | int? | Cancels and kills the process after this duration. |
 | `AlertOnFail` | bool | Send alerts on failure (via `Monitoring.Notifiers`). |
 | `CaptureOutput` | bool | If `true`, stdout/stderr are captured and logged. |
+| `MaxOutputKB` | int | Limit captured stdout/stderr buffer size in KB (default `512`). |
 | `TreatStdErrAsFailure` | bool | If `true`, non-empty `stderr` marks the execution as failed even if `ExitCode == 0`. Default is `false` (success is determined by `ExitCode == 0`). |
 | `QuietStartLog` | bool | Suppresses the "Executing…" start log — useful for very frequent jobs. |
 | `CustomAlertMessage` | string | Extra context inserted into email/webhook templates. |

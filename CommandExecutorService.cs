@@ -497,12 +497,13 @@ namespace RunCommandsService
                             }
                         });
 
-                    Task<string> readStdOut = command.CaptureOutput
-                        ? process.StandardOutput.ReadToEndAsync()
-                        : Task.FromResult<string>(null);
-                    Task<string> readStdErr = command.CaptureOutput
-                        ? process.StandardError.ReadToEndAsync()
-                        : Task.FromResult<string>(null);
+                    int maxOutputChars = (command.MaxOutputKB > 0 ? command.MaxOutputKB : 512) * 1024;
+                    Task<string?> readStdOut = command.CaptureOutput
+                        ? ReadBoundedStreamAsync(process.StandardOutput, maxOutputChars)
+                        : Task.FromResult<string?>(null);
+                    Task<string?> readStdErr = command.CaptureOutput
+                        ? ReadBoundedStreamAsync(process.StandardError, maxOutputChars)
+                        : Task.FromResult<string?>(null);
 
                     try
                     {
@@ -669,6 +670,32 @@ namespace RunCommandsService
         }
 
 
+        private static async Task<string?> ReadBoundedStreamAsync(TextReader reader, int maxChars)
+        {
+            var buffer = new char[4096];
+            var sb = new System.Text.StringBuilder();
+            int totalRead = 0;
+            int read;
+
+            while ((read = await reader.ReadAsync(buffer, 0, buffer.Length)) > 0)
+            {
+                if (totalRead + read > maxChars)
+                {
+                    int allowed = maxChars - totalRead;
+                    if (allowed > 0)
+                    {
+                        sb.Append(buffer, 0, allowed);
+                    }
+                    sb.Append($"\n... [Output truncated after {maxChars} characters]");
+                    break;
+                }
+                sb.Append(buffer, 0, read);
+                totalRead += read;
+            }
+
+            return sb.Length > 0 ? sb.ToString() : null;
+        }
+
         public override async Task StopAsync(CancellationToken cancellationToken)
         {
             _logger.LogInformation("Service is stopping");
@@ -698,6 +725,8 @@ namespace RunCommandsService
         public bool AlertOnFail { get; set; } = true;
 
         public bool CaptureOutput { get; set; } = true;   // per-job: don't collect stdout/stderr when false
+
+        public int MaxOutputKB { get; set; } = 512;       // per-job: limit captured stdout/stderr size in KB (default 512KB)
 
         public bool TreatStdErrAsFailure { get; set; } = false; // per-job: treat non-empty stderr as failure even if ExitCode == 0
 

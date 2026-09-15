@@ -158,6 +158,7 @@ sc.exe start "ScheduledCommandExecutor"
 
   "AlertOnFail": true,
   "CaptureOutput": true,   // set false for “silent”
+  "MaxOutputKB": 512,      // limit captured stdout/stderr size in KB (default 512KB)
   "TreatStdErrAsFailure": false, // set true if non-empty stderr should mark job as failed even if ExitCode == 0
   "QuietStartLog": false,
   "CustomAlertMessage": null
