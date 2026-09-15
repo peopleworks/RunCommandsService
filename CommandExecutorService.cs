@@ -561,11 +561,13 @@ namespace RunCommandsService
                         _logger.LogError("Errors {Id}:\n{Error}", command.Id, error);
 
                     // Success rules:
-                    // - if we captured output and stderr has content -> mark as failure
-                    // - otherwise rely on exit code 0
+                    // - Success by default if ExitCode == 0
+                    // - If TreatStdErrAsFailure is true and stderr has content -> mark as failure
                     var success = (exitCode ?? -1) == 0;
-                    if (command.CaptureOutput && !string.IsNullOrWhiteSpace(error))
+                    if (command.TreatStdErrAsFailure && command.CaptureOutput && !string.IsNullOrWhiteSpace(error))
+                    {
                         success = false;
+                    }
 
                     if (!success)
                     {
@@ -573,9 +575,10 @@ namespace RunCommandsService
                         if (command.CaptureOutput && !string.IsNullOrWhiteSpace(error))
                         {
                             _logger.LogError(
-                                "Execution of {Id} failed with exit code {ExitCode}. See stderr output above.",
+                                "Execution of {Id} failed with exit code {ExitCode}. Stderr: {Error}",
                                 command.Id,
-                                exitCodeLogValue);
+                                exitCodeLogValue,
+                                error);
                         }
                         else
                         {
@@ -596,10 +599,11 @@ namespace RunCommandsService
                             EndUtc = DateTime.UtcNow,
                             ExitCode = exitCode,
                             Success = success,
-                            Error =
-                                command.CaptureOutput
-                                        ? (string.IsNullOrWhiteSpace(error) ? null : error)
-                                        : ((exitCode ?? -1) == 0 ? null : $"ExitCode={exitCode}")
+                            Error = !success
+                                ? (command.CaptureOutput && !string.IsNullOrWhiteSpace(error)
+                                    ? error
+                                    : $"ExitCode={exitCode}")
+                                : null
                         });
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -694,6 +698,8 @@ namespace RunCommandsService
         public bool AlertOnFail { get; set; } = true;
 
         public bool CaptureOutput { get; set; } = true;   // per-job: don't collect stdout/stderr when false
+
+        public bool TreatStdErrAsFailure { get; set; } = false; // per-job: treat non-empty stderr as failure even if ExitCode == 0
 
         public bool QuietStartLog { get; set; } = false;  // per-job: hide "Executing ..." info line
 

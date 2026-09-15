@@ -1,9 +1,9 @@
 # Scheduled Command Executor — Windows Service
 
-A lightweight **.NET 9 Windows Service** that runs commands on cron schedules, with concurrency control, per‑job timeouts, a live monitoring dashboard, optional email/webhook alerts, and a simple JSON config with hot‑reload.
+A lightweight **.NET 10 Windows Service** that runs commands on cron schedules, with concurrency control, per‑job timeouts, a live monitoring dashboard, optional email/webhook alerts, and a simple JSON config with hot‑reload.
 
 [![build](https://github.com/peopleworks/RunCommandsService/actions/workflows/build.yml/badge.svg)](https://github.com/peopleworks/RunCommandsService/actions/workflows/build.yml)
-![.NET](https://img.shields.io/badge/.NET-9.0-512BD4)
+![.NET](https://img.shields.io/badge/.NET-10.0-512BD4)
 ![Platform](https://img.shields.io/badge/platform-Windows-0078D6)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Version](https://img.shields.io/badge/version-2.9.0-blue)
@@ -102,7 +102,7 @@ flowchart TD
 ## 📋 Prerequisites
 
 - Windows OS
-- [.NET 9.0 SDK](https://dotnet.microsoft.com/download) (to build) / .NET 9 runtime (to run)
+- [.NET 10.0 SDK](https://dotnet.microsoft.com/download) (to build) / .NET 10 runtime (to run)
 - Administrative privileges for service installation and URL ACL reservation
 
 ## 🚀 Quick start
@@ -243,7 +243,8 @@ Configuration lives in `appsettings.json`. A minimal example:
 | `ConcurrencyKey` | string | Grouping key for mutual exclusion. Defaults to `Id` if empty. |
 | `MaxRuntimeMinutes` | int? | Cancels and kills the process after this duration. |
 | `AlertOnFail` | bool | Send alerts on failure (via `Monitoring.Notifiers`). |
-| `CaptureOutput` | bool | If `true`, stdout/stderr are captured and logged; stderr content marks the run failed. |
+| `CaptureOutput` | bool | If `true`, stdout/stderr are captured and logged. |
+| `TreatStdErrAsFailure` | bool | If `true`, non-empty `stderr` marks the execution as failed even if `ExitCode == 0`. Default is `false` (success is determined by `ExitCode == 0`). |
 | `QuietStartLog` | bool | Suppresses the "Executing…" start log — useful for very frequent jobs. |
 | `CustomAlertMessage` | string | Extra context inserted into email/webhook templates. |
 

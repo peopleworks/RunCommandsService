@@ -5,7 +5,7 @@ Operational guide for running, extending, and automating **Scheduled Command Exe
 
 > Latest release: **v2.8** — correct TZ/DST scheduling across machine vs. job TZ (Cronos with UTC base + job TZ), non-blocking scheduler loop, and `validateCron` lowercase alias.
 
-> Target stack: **.NET 9.0**, Windows (service or console), `Cronos` for cron parsing, `HttpListener` for the dashboard/API.
+> Target stack: **.NET 10.0**, Windows (service or console), `Cronos` for cron parsing, `HttpListener` for the dashboard/API.
 
 ---
 
@@ -44,7 +44,7 @@ Define these “personas” in your Codex setup; pick one per task.
 
 ```
 Act as the Core Engineer for Scheduled Command Executor. Constraints:
-- .NET 9.0 BackgroundService on Windows.
+- .NET 10.0 BackgroundService on Windows.
 - Use Cronos; handle invalid cron without throwing; log once per bad job; skip disabled jobs.
 - Compute next‑run with Cronos using UTC base + job TimeZone (DST safe). Implementation note: call `cron.GetNextOccurrence(DateTime.UtcNow, tz)`. Do NOT pass local DateTime to Cronos.
 - Concurrency: TryAcquireAsync + Skip (lock) with 0ms duration.
@@ -158,6 +158,7 @@ sc.exe start "ScheduledCommandExecutor"
 
   "AlertOnFail": true,
   "CaptureOutput": true,   // set false for “silent”
+  "TreatStdErrAsFailure": false, // set true if non-empty stderr should mark job as failed even if ExitCode == 0
   "QuietStartLog": false,
   "CustomAlertMessage": null
 }
