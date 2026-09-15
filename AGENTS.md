@@ -3,7 +3,7 @@
 
 Operational guide for running, extending, and automating **Scheduled Command Executor** with an LLM from the command line.
 
-> Latest release: **v2.8** — correct TZ/DST scheduling across machine vs. job TZ (Cronos with UTC base + job TZ), non-blocking scheduler loop, and `validateCron` lowercase alias.
+> Latest release: **v2.9.1** — .NET 10 migration, xUnit test suite (50 tests), thread-safe file logger with size rotation, ExitCode-based success with `TreatStdErrAsFailure` and `MaxOutputKB`, `SecretMasker` with constant-time auth, and documentation validation.
 
 > Target stack: **.NET 10.0**, Windows (service or console), `Cronos` for cron parsing, `HttpListener` for the dashboard/API.
 
@@ -276,7 +276,30 @@ curl -H "Content-Type: application/json" -H "X-Admin-Key: CHANGE-ME" -d $body ht
 
 ---
 
-## 13) What’s new v2.8 (for agents)
+## 13) What's new v2.9.1 (for agents)
+
+Core Engineer
+- Migrated to .NET 10.0; `global.json` pins the SDK.
+- `FileLogger`: thread-safe size-based rotation (`MaxFileSizeBytes`), periodic cleanup via `LastWriteTimeUtc`, `MinLevel` filtering.
+- Success criteria: `ExitCode == 0` (not `<= 0`). Opt-in `TreatStdErrAsFailure` marks jobs as failed when stderr is non-empty.
+- Bounded output: `ReadBoundedStreamAsync` caps stdout/stderr capture at `MaxOutputKB` (default 512 KB).
+
+Security
+- `SecretMasker`: constant-time `FixedTimeEquals` for auth comparison, `MaskSecret` for log redaction, `IsDefaultOrWeak` to reject default keys.
+- `ConfigValidator` warns on startup if `AdminKey` is weak or default.
+- `appsettings.example.json` ships as a safe public template (no real secrets).
+
+Testing
+- xUnit test suite (50+ tests): timezone helpers, file logger rotation, bounded stream reader, secret masker, documentation path validation.
+- CI: `dotnet test --collect:"XPlat Code Coverage"` in `build.yml`.
+
+Docs
+- All CLI paths verified against project structure by `DocumentationValidationTests`.
+- README banner, changelog, and AGENTS.md kept in sync with the version.
+
+---
+
+### Previous: What's new v2.8
 
 Core Engineer
 - Use Cronos TZ API with a UTC base: `cron.GetNextOccurrence(nowUtc, tz)`. Do NOT use the old “fake UTC local wall‑clock” shim.
