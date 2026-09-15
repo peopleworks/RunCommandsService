@@ -31,6 +31,27 @@ public class TimezoneHelperTests
     }
 
     [Theory]
+    [InlineData("America/New_York", true)]
+    [InlineData("Eastern Standard Time", true)]
+    [InlineData("UTC", true)]
+    [InlineData("Invalid/Zone", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void IsValidTimeZone_ReturnsExpectedResult(string? zone, bool expectedValid)
+    {
+        var isValid = TimeZoneHelper.IsValidTimeZone(zone!, out var error);
+        Assert.Equal(expectedValid, isValid);
+        if (expectedValid)
+        {
+            Assert.Null(error);
+        }
+        else
+        {
+            Assert.NotNull(error);
+        }
+    }
+
+    [Theory]
     [InlineData("0 9 * * *")]
     [InlineData("0 23 * * 1-5")]
     [InlineData("*/5 * * * *")]
@@ -70,5 +91,33 @@ public class TimezoneHelperTests
         Assert.True(next.HasValue);
         Assert.True(next.Value > now);
         Assert.Equal(DateTimeKind.Utc, next.Value.Kind);
+    }
+
+    [Fact]
+    public void DaylightSavingTime_SpringForward_HandlesNonExistentLocalTime()
+    {
+        // 2:30 AM on March 8, 2026 does not exist in Eastern Standard Time (spring forward from 2:00 AM to 3:00 AM)
+        var cron = CronExpression.Parse("30 2 8 3 *");
+        var tz = TimeZoneHelper.FindTimeZone("America/New_York");
+        var fromTimeUtc = new DateTime(2026, 3, 7, 0, 0, 0, DateTimeKind.Utc);
+
+        var nextOccurrence = cron.GetNextOccurrence(fromTimeUtc, tz);
+
+        Assert.True(nextOccurrence.HasValue);
+        Assert.Equal(DateTimeKind.Utc, nextOccurrence.Value.Kind);
+    }
+
+    [Fact]
+    public void DaylightSavingTime_FallBack_HandlesAmbiguousLocalTime()
+    {
+        // 1:30 AM on November 1, 2026 is ambiguous in Eastern Standard Time (fall back from 2:00 AM to 1:00 AM)
+        var cron = CronExpression.Parse("30 1 1 11 *");
+        var tz = TimeZoneHelper.FindTimeZone("America/New_York");
+        var fromTimeUtc = new DateTime(2026, 10, 31, 0, 0, 0, DateTimeKind.Utc);
+
+        var nextOccurrence = cron.GetNextOccurrence(fromTimeUtc, tz);
+
+        Assert.True(nextOccurrence.HasValue);
+        Assert.Equal(DateTimeKind.Utc, nextOccurrence.Value.Kind);
     }
 }
