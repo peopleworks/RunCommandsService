@@ -480,3 +480,31 @@ Have an idea? [Open a feature request](../../issues/new?template=feature_request
 - [Windows Services documentation](https://learn.microsoft.com/dotnet/framework/windows-services/)
 - [Cron expression generator (crontab.guru)](https://crontab.guru/)
 - [.NET documentation](https://learn.microsoft.com/dotnet/core/)
+
+---
+
+<div align="center">
+
+### Built by PeopleWorks
+
+Created by **Pedro Hernández — PeopleWorks**,
+[Microsoft MVP for .NET](https://mvp.microsoft.com/en-US/mvp/profile/24060a02-dbc6-44ec-bca5-c213ff9835c5)
+
+Built with [.NET 10](https://dotnet.microsoft.com/) · [Cronos](https://github.com/HangfireIO/Cronos) · [HttpListener](https://learn.microsoft.com/dotnet/api/system.net.httplistener)
+
+**PeopleWorks automation & database tools** — **Scheduled Command Executor** runs the jobs ·
+[DBFSync](https://github.com/peopleworks/DBFSync) moves legacy data ·
+[SQLDiff](https://github.com/peopleworks/SqlSchemaDiff) moves the schema ·
+[SyncJob](https://github.com/peopleworks/syncjob) moves relational data
+
+[📖 DBFSync guide](https://peopleworks.github.io/DBFSync/) ·
+[📖 SQLDiff guide](https://peopleworks.github.io/SqlSchemaDiff/) ·
+[📖 SyncJob guide](https://peopleworks.github.io/syncjob/)
+
+**Built for unattended production workloads, where a missed or duplicated run matters.**
+
+MIT licensed — use it, fork it, ship it.
+
+© 2026 PeopleWorks
+
+</div>
