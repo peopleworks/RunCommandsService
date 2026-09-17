@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Text.Json;
+using System.Xml.Linq;
 using Microsoft.Extensions.Configuration;
 using Xunit;
 using RunCommandsService;
@@ -58,5 +59,13 @@ public class DocumentationValidationTests
             var content = File.ReadAllText(fullPath);
             Assert.DoesNotContain(@"\RunCommandsService\RunCommandsService.csproj", content);
         }
+
+        var project = XDocument.Load(Path.Combine(repoRoot, "RunCommandsService.csproj"));
+        var version = project.Descendants("Version").Single().Value;
+        var readme = File.ReadAllText(Path.Combine(repoRoot, "README.md"));
+        var agents = File.ReadAllText(Path.Combine(repoRoot, "AGENTS.md"));
+
+        Assert.Contains($"version-{version}-blue", readme);
+        Assert.Contains($"Latest release: **v{version}**", agents);
     }
 }

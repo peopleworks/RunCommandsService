@@ -169,14 +169,75 @@ namespace RunCommandsService
                 var invalidTimezoneJobs = 0;
                 var disabledJobs = 0;
                 var validationIssues = new List<string>();
+                var configurationValidation = ConfigValidator.Validate(_configuration);
+                foreach (var problem in configurationValidation.ConfigurationProblems)
+                    _logger.LogError("Configuration error: {Problem}", problem);
+                foreach (var warning in configurationValidation.SecurityWarnings)
+                    _logger.LogWarning("Configuration security warning: {Warning}", warning);
+
+                var duplicateIds = _commands
+                    .Where(c => c != null && !string.IsNullOrWhiteSpace(c.Id))
+                    .GroupBy(c => c.Id.Trim(), StringComparer.OrdinalIgnoreCase)
+                    .Where(g => g.Count() > 1)
+                    .Select(g => g.Key)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
                 foreach (var c in _commands)
                 {
+                    if (c == null)
+                    {
+                        invalidCronJobs++;
+                        validationIssues.Add("  • Null job entry: job will be skipped");
+                        if (_invalidScheduleLogged.Add("(null job)"))
+                            _logger.LogError("Null job entry found. Job will be skipped until fixed.");
+                        continue;
+                    }
+
                     if (string.IsNullOrWhiteSpace(c.Id))
                         c.Id = c.Command;
 
+                    if (string.IsNullOrWhiteSpace(c.Id) || string.IsNullOrWhiteSpace(c.Command))
+                    {
+                        var invalidKey = string.IsNullOrWhiteSpace(c.Id) ? "(unnamed job)" : c.Id;
+                        var missingError = string.IsNullOrWhiteSpace(c.Id) ? "missing Id and Command" : "missing Command";
+                        c.Cron = null;
+                        if (!string.IsNullOrWhiteSpace(c.Id))
+                            _nextRunUtc[c.Id] = null;
+                        if (c.Enabled)
+                        {
+                            invalidCronJobs++;
+                            if (_invalidScheduleLogged.Add(invalidKey))
+                                _logger.LogError("Job {Id}: {Error}. Job will be skipped until fixed.", invalidKey, missingError);
+                            validationIssues.Add($"  • Job '{invalidKey}': {missingError}");
+                        }
+                        else
+                        {
+                            disabledJobs++;
+                        }
+                        continue;
+                    }
+
                     if (string.IsNullOrWhiteSpace(c.TimeZone))
                         c.TimeZone = _schedOptions.DefaultTimeZone;
+
+                    if (duplicateIds.Contains(c.Id?.Trim() ?? string.Empty))
+                    {
+                        c.Cron = null;
+                        _nextRunUtc[c.Id] = null;
+                        if (c.Enabled)
+                        {
+                            invalidCronJobs++;
+                            const string duplicateError = "duplicate Id (job IDs are case-insensitive)";
+                            if (_invalidScheduleLogged.Add(c.Id))
+                                _logger.LogError("Job {Id}: {Error}. Job will be skipped until fixed.", c.Id, duplicateError);
+                            validationIssues.Add($"  • Job '{c.Id}': {duplicateError}");
+                        }
+                        else
+                        {
+                            disabledJobs++;
+                        }
+                        continue;
+                    }
 
                     // Allow logging again if a previously-bad cron was fixed
                     _invalidScheduleLogged.Remove(c.Id);
@@ -350,7 +411,7 @@ namespace RunCommandsService
                         _schedulerErrorCount = 0;
                     }
 
-                    await Task.Delay(TimeSpan.FromSeconds(_schedOptions.PollSeconds), stoppingToken);
+                    await Task.Delay(TimeSpan.FromSeconds(Math.Max(1, _schedOptions.PollSeconds)), stoppingToken);
                 }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                 {

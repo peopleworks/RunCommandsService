@@ -3,7 +3,7 @@
 
 Operational guide for running, extending, and automating **Scheduled Command Executor** with an LLM from the command line.
 
-> Latest release: **v2.9.1** — .NET 10 migration, xUnit test suite (50 tests), thread-safe file logger with size rotation, ExitCode-based success with `TreatStdErrAsFailure` and `MaxOutputKB`, `SecretMasker` with constant-time auth, and documentation validation.
+> Latest release: **v2.9.2** — strict configuration validation, bounded HTTP JSON bodies, defensive response headers, concurrency-safe durable config writes, and 57 automated tests.
 
 > Target stack: **.NET 10.0**, Windows (service or console), `Cronos` for cron parsing, `HttpListener` for the dashboard/API.
 
@@ -175,6 +175,7 @@ sc.exe start "ScheduledCommandExecutor"
   },
   "Monitoring": {
     "EnableHttpEndpoint": true,
+    "MaxRequestBodyBytes": 65536,
     "HttpPrefixes": [ "http://localhost:5058/" ],
     "Dashboard": {
       "Enabled": true,
@@ -276,7 +277,25 @@ curl -H "Content-Type: application/json" -H "X-Admin-Key: CHANGE-ME" -d $body ht
 
 ---
 
-## 13) What's new v2.9.1 (for agents)
+## 13) What's new v2.9.2 (for agents)
+
+Core Engineer
+- `ConfigValidator` rejects invalid scheduler/job ranges and case-insensitive duplicate job IDs.
+- Runtime skips null, commandless, and duplicate job entries; `PollSeconds` is clamped to avoid a tight loop after a bad edit.
+- Job Builder updates are serialized and written through a flushed temporary file plus atomic replacement and backup.
+
+Security
+- JSON request bodies are capped by `Monitoring.MaxRequestBodyBytes` (default 64 KiB; allowed range 1 KiB–1 MiB).
+- Body/content errors return 400, 413, or 415; HTTP responses include CSP, `nosniff`, frame, referrer, and no-store protections.
+- Plain-HTTP non-loopback prefixes produce a validation warning; keep real keys in `Monitoring__AdminKey` rather than committed JSON.
+
+Testing
+- 57 xUnit tests cover configuration ranges, duplicate IDs, request body bounds, time zones, logging, output capture, secrets, and documentation.
+- Documentation validation keeps the csproj, README, and AGENTS.md version declarations synchronized.
+
+---
+
+### Previous: What's new v2.9.1
 
 Core Engineer
 - Migrated to .NET 10.0; `global.json` pins the SDK.

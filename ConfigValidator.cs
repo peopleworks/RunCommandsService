@@ -24,11 +24,12 @@ namespace RunCommandsService
         public class ValidationReport
         {
             public List<JobValidationResult> Jobs { get; } = new List<JobValidationResult>();
+            public List<string> ConfigurationProblems { get; } = new List<string>();
             public List<string> SecurityWarnings { get; } = new List<string>();
             public int TotalJobs => Jobs.Count;
             public int ValidJobs { get; set; }
             public int InvalidJobs { get; set; }
-            public bool AllValid => InvalidJobs == 0 && SecurityWarnings.Count == 0;
+            public bool AllValid => InvalidJobs == 0 && ConfigurationProblems.Count == 0 && SecurityWarnings.Count == 0;
         }
 
         /// <summary>Validate the ScheduledCommands section and security options of an <see cref="IConfiguration"/>.</summary>
@@ -40,6 +41,39 @@ namespace RunCommandsService
                                   ?? "UTC";
 
             var report = Validate(commands, defaultTimeZone);
+
+            var scheduler = configuration.GetSection("Scheduler").Get<SchedulerOptions>() ?? new SchedulerOptions();
+            if (scheduler.PollSeconds <= 0)
+                report.ConfigurationProblems.Add("Scheduler:PollSeconds must be greater than zero.");
+            if (scheduler.MaxParallelism <= 0)
+                report.ConfigurationProblems.Add("Scheduler:MaxParallelism must be greater than zero.");
+            if (!TimeZoneHelper.IsValidTimeZone(defaultTimeZone, out var defaultTimeZoneError))
+                report.ConfigurationProblems.Add($"Scheduler:DefaultTimeZone is invalid — {defaultTimeZoneError}");
+
+            var monitoring = configuration.GetSection("Monitoring").Get<MonitoringOptions>() ?? new MonitoringOptions();
+            if (monitoring.EnableHttpEndpoint)
+            {
+                if (monitoring.HttpPrefixes == null || monitoring.HttpPrefixes.Count == 0)
+                {
+                    report.ConfigurationProblems.Add("Monitoring:HttpPrefixes must contain at least one prefix when the HTTP endpoint is enabled.");
+                }
+                else
+                {
+                    foreach (var prefix in monitoring.HttpPrefixes)
+                    {
+                        if (!TryValidateHttpPrefix(prefix, out var prefixError))
+                            report.ConfigurationProblems.Add($"Monitoring:HttpPrefixes contains an invalid prefix '{prefix}' — {prefixError}");
+                        else if (IsRemotelyExposedHttpPrefix(prefix))
+                            report.SecurityWarnings.Add($"Monitoring HTTP prefix '{prefix}' may expose the administrative API without transport encryption. Prefer loopback or HTTPS behind a reverse proxy.");
+                    }
+                }
+
+                if (monitoring.MaxRequestBodyBytes < 1024 || monitoring.MaxRequestBodyBytes > 1024 * 1024)
+                    report.ConfigurationProblems.Add("Monitoring:MaxRequestBodyBytes must be between 1024 and 1048576 bytes.");
+            }
+
+            if (monitoring.Dashboard.Enabled && monitoring.Dashboard.AutoRefreshSeconds <= 0)
+                report.ConfigurationProblems.Add("Monitoring:Dashboard:AutoRefreshSeconds must be greater than zero.");
 
             // Security checks for default secrets
             var enableHttp = configuration.GetValue<bool>("Monitoring:EnableHttpEndpoint");
@@ -62,6 +96,11 @@ namespace RunCommandsService
             {
                 report.SecurityWarnings.Add("Monitoring:Notifiers:Webhook:Url is using an unconfigured example URL.");
             }
+            else if (webhookEnabled && (!Uri.TryCreate(webhookUrl, UriKind.Absolute, out var webhookUri) ||
+                                        (webhookUri.Scheme != Uri.UriSchemeHttp && webhookUri.Scheme != Uri.UriSchemeHttps)))
+            {
+                report.ConfigurationProblems.Add("Monitoring:Notifiers:Webhook:Url must be an absolute HTTP or HTTPS URL.");
+            }
 
             return report;
         }
@@ -70,9 +109,26 @@ namespace RunCommandsService
         public static ValidationReport Validate(List<ScheduledCommand> commands, string defaultTimeZone)
         {
             var report = new ValidationReport();
+            commands ??= new List<ScheduledCommand>();
 
-            foreach (var c in commands ?? new List<ScheduledCommand>())
+            var duplicateIds = commands
+                .Where(c => c != null && !string.IsNullOrWhiteSpace(c.Id))
+                .GroupBy(c => c.Id.Trim(), StringComparer.OrdinalIgnoreCase)
+                .Where(g => g.Count() > 1)
+                .Select(g => g.Key)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var c in commands)
             {
+                if (c == null)
+                {
+                    report.InvalidJobs++;
+                    var nullJob = new JobValidationResult { Id = "(null job)", IsValid = false };
+                    nullJob.Problems.Add("job entry must be a JSON object");
+                    report.Jobs.Add(nullJob);
+                    continue;
+                }
+
                 var jr = new JobValidationResult
                 {
                     Id = string.IsNullOrWhiteSpace(c.Id) ? "(no id)" : c.Id
@@ -80,9 +136,17 @@ namespace RunCommandsService
 
                 if (string.IsNullOrWhiteSpace(c.Id))
                     jr.Problems.Add("missing Id");
+                else if (duplicateIds.Contains(c.Id.Trim()))
+                    jr.Problems.Add("duplicate Id (job IDs are case-insensitive)");
 
                 if (string.IsNullOrWhiteSpace(c.Command))
                     jr.Problems.Add("missing Command");
+
+                if (c.MaxRuntimeMinutes.HasValue && c.MaxRuntimeMinutes.Value <= 0)
+                    jr.Problems.Add("MaxRuntimeMinutes must be greater than zero when specified");
+
+                if (c.MaxOutputKB <= 0 || c.MaxOutputKB > 102400)
+                    jr.Problems.Add("MaxOutputKB must be between 1 and 102400");
 
                 if (string.IsNullOrWhiteSpace(c.CronExpression))
                 {
@@ -128,6 +192,14 @@ namespace RunCommandsService
                 sb.AppendLine("-------------------------------");
             }
 
+            if (report.ConfigurationProblems.Count > 0)
+            {
+                sb.AppendLine("Configuration Problems:");
+                foreach (var problem in report.ConfigurationProblems)
+                    sb.AppendLine($"  [FAIL] {problem}");
+                sb.AppendLine("-------------------------------");
+            }
+
             if (report.TotalJobs == 0)
                 sb.AppendLine("No jobs found in ScheduledCommands.");
 
@@ -148,6 +220,60 @@ namespace RunCommandsService
             sb.AppendLine("-------------------------------");
             sb.AppendLine($"{report.TotalJobs} job(s): {report.ValidJobs} valid, {report.InvalidJobs} invalid.");
             return sb.ToString();
+        }
+
+        private static bool TryValidateHttpPrefix(string? prefix, out string error)
+        {
+            if (string.IsNullOrWhiteSpace(prefix))
+            {
+                error = "prefix is empty";
+                return false;
+            }
+
+            var trimmed = prefix.Trim();
+            if (!trimmed.EndsWith('/'))
+            {
+                error = "HttpListener prefixes must end with '/'";
+                return false;
+            }
+
+            // HttpListener accepts '+' and '*' host wildcards, while System.Uri does not
+            // consistently parse them. Substitute localhost only for structural validation.
+            var parseable = trimmed
+                .Replace("://+:", "://localhost:", StringComparison.Ordinal)
+                .Replace("://*:", "://localhost:", StringComparison.Ordinal);
+
+            if (!Uri.TryCreate(parseable, UriKind.Absolute, out var uri) ||
+                (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) ||
+                string.IsNullOrWhiteSpace(uri.Host) ||
+                !string.IsNullOrEmpty(uri.Query) ||
+                !string.IsNullOrEmpty(uri.Fragment))
+            {
+                error = "expected an absolute http(s) prefix without query or fragment";
+                return false;
+            }
+
+            error = string.Empty;
+            return true;
+        }
+
+        private static bool IsRemotelyExposedHttpPrefix(string prefix)
+        {
+            var trimmed = prefix.Trim();
+            if (trimmed.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            if (trimmed.Contains("://+:", StringComparison.Ordinal) ||
+                trimmed.Contains("://*:", StringComparison.Ordinal))
+                return true;
+
+            if (!Uri.TryCreate(trimmed, UriKind.Absolute, out var uri))
+                return false;
+
+            return !string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase) &&
+                   !string.Equals(uri.Host, "127.0.0.1", StringComparison.OrdinalIgnoreCase) &&
+                   !string.Equals(uri.Host, "[::1]", StringComparison.OrdinalIgnoreCase) &&
+                   !string.Equals(uri.Host, "::1", StringComparison.OrdinalIgnoreCase);
         }
     }
 }

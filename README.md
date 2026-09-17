@@ -6,9 +6,9 @@ A lightweight **.NET 10 Windows Service** that runs commands on cron schedules, 
 ![.NET](https://img.shields.io/badge/.NET-10.0-512BD4)
 ![Platform](https://img.shields.io/badge/platform-Windows-0078D6)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Version](https://img.shields.io/badge/version-2.9.1-blue)
+![Version](https://img.shields.io/badge/version-2.9.2-blue)
 
-> **v2.9.1 — Technical review hardening:** .NET 10, xUnit test suite (50 tests), thread-safe file logger, bounded output capture, `SecretMasker`, and documentation validation. See the [Changelog](#-changelog) for the full history.
+> **v2.9.2 — Configuration and HTTP hardening:** strict ranges and duplicate-ID validation, bounded JSON requests, defensive response headers, and concurrency-safe durable configuration writes. See the [Changelog](#-changelog) for the full history.
 
 ---
 
@@ -200,6 +200,7 @@ Configuration lives in `appsettings.json`. A minimal example:
   },
   "Monitoring": {
     "EnableHttpEndpoint": true,
+    "MaxRequestBodyBytes": 65536,
     "AdminKey": "put-a-strong-random-key-here",
     "HttpPrefixes": [ "http://localhost:5058/" ],
     "Dashboard": { "Enabled": true, "HtmlPath": "dashboard.html", "AutoRefreshSeconds": 5 },
@@ -255,7 +256,10 @@ Configuration lives in `appsettings.json`. A minimal example:
 - `Scheduler.MaxParallelism` — global cap on concurrent job executions.
 - `Scheduler.DefaultTimeZone` — fallback time zone for jobs without one.
 - `Monitoring.HttpPrefixes` — prefixes for the built‑in HTTP server.
+- `Monitoring.MaxRequestBodyBytes` — maximum JSON request body size, from `1024` to `1048576` bytes (default `65536`). Oversized requests return HTTP 413.
 - `Monitoring.AdminKey` — required (as the `X-Admin-Key` header) for Job Builder write APIs.
+
+For deployments, keep the real admin key out of committed JSON and set it with the `Monitoring__AdminKey` environment variable. Plain HTTP should remain bound to loopback; use HTTPS at a reverse proxy for remote access.
 
 ### Cron quick reference
 
@@ -403,6 +407,7 @@ RunCommandsService/
 
 ## 📈 Changelog
 
+- **v2.9.2** — Configuration and HTTP hardening: validates scheduler ranges, HTTP prefixes, request limits, per-job limits, webhook URLs, and case-insensitive duplicate IDs; skips malformed/duplicate runtime entries safely; caps JSON bodies with explicit 400/413/415 responses; adds CSP and defensive headers; serializes Job Builder writes with durable atomic replacement and backup; adds version-sync and request-limit regression coverage (57 tests).
 - **v2.9.1** — Technical review hardening: migrated to .NET 10 with `global.json`; xUnit test suite (50 tests) with code coverage in CI; file logger with thread-safe size rotation, periodic cleanup (`LastWriteTimeUtc`), and `MinLevel` filtering; success determined by `ExitCode == 0` with opt-in `TreatStdErrAsFailure`; bounded stdout/stderr capture (`MaxOutputKB`); `SecretMasker` with constant-time auth comparison and default-secret rejection; `appsettings.example.json` template; corrected CLI paths in all docs with automated documentation validation tests.
 - **v2.9** — Production resilience: 80+ timezone mappings with explicit fallback warnings, startup validation report, scheduler heartbeat on `/api/health`, exponential backoff (10s→20s→40s→60s) with critical alerts after 3+ failures, protected hot‑reload, richer error context.
 - **v2.8** — DST‑correct next‑run using Cronos with a UTC base + job TZ; non‑blocking scheduler loop; `validateCron` lowercase alias and runtime parity.

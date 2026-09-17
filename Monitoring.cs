@@ -22,6 +22,9 @@ namespace RunCommandsService
 
         public List<string> HttpPrefixes { get; set; } = new() { "http://localhost:5058/" };
 
+        /// <summary>Maximum JSON request size accepted by write and cron-preview APIs.</summary>
+        public int MaxRequestBodyBytes { get; set; } = 64 * 1024;
+
         public AlertThresholds AlertOn { get; set; } = new();
 
         public NotifiersOptions Notifiers { get; set; } = new();
@@ -435,6 +438,7 @@ Message:  ${CustomMessage}";
         private HttpListener _listener;
         private string _dashboardPath;
         private FileSystemWatcher _htmlWatcher;
+        private static readonly object ConfigWriteLock = new();
 
         public Monitoring(
             IConfiguration configuration,
@@ -520,6 +524,7 @@ Message:  ${CustomMessage}";
         {
             try
             {
+                ApplySecurityHeaders(ctx.Response);
                 var path = ctx.Request.Url.AbsolutePath;
                 var pathLower = (path ?? string.Empty).ToLowerInvariant();
                 if(path == "/" || path == "/dashboard")
@@ -577,6 +582,15 @@ Message:  ${CustomMessage}";
                     ctx.Response.StatusCode = 404;
                     ctx.Response.Close();
                 }
+            } catch(RequestBodyTooLargeException ex)
+            {
+                WriteJson(ctx, new { ok = false, error = ex.Message }, 413);
+            } catch(UnsupportedMediaTypeException ex)
+            {
+                WriteJson(ctx, new { ok = false, error = ex.Message }, 415);
+            } catch(JsonException ex)
+            {
+                WriteJson(ctx, new { ok = false, error = $"Invalid JSON: {ex.Message}" }, 400);
             } catch(Exception ex)
             {
                 try
@@ -590,6 +604,17 @@ Message:  ${CustomMessage}";
                 {
                 }
             }
+        }
+
+        private static void ApplySecurityHeaders(HttpListenerResponse response)
+        {
+            response.Headers["X-Content-Type-Options"] = "nosniff";
+            response.Headers["X-Frame-Options"] = "DENY";
+            response.Headers["Referrer-Policy"] = "no-referrer";
+            response.Headers["Cache-Control"] = "no-store";
+            response.Headers["Content-Security-Policy"] =
+                "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
+                "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
         }
         #endregion
 
@@ -785,112 +810,146 @@ Message:  ${CustomMessage}";
         {
             var cfgPath = ConfigPath();
             var json = File.ReadAllText(cfgPath, Encoding.UTF8);
-            var dict = JsonSerializer.Deserialize<Dictionary<string, object>>(json);
+            var dict = JsonSerializer.Deserialize<Dictionary<string, object>>(json)
+                       ?? throw new InvalidDataException("appsettings.json must contain a JSON object.");
             dict["ScheduledCommands"] = list;
             var newJson = JsonSerializer.Serialize(dict, new JsonSerializerOptions { WriteIndented = true });
 
             var tmp = cfgPath + ".tmp";
             var bak = cfgPath + ".bak";
-            File.WriteAllText(tmp, newJson, Encoding.UTF8);
-            if(File.Exists(bak))
-                File.Delete(bak);
-            File.Replace(tmp, cfgPath, bak);
+            try
+            {
+                using (var stream = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+                using (var writer = new StreamWriter(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)))
+                {
+                    writer.Write(newJson);
+                    writer.Flush();
+                    stream.Flush(flushToDisk: true);
+                }
+
+                if(File.Exists(bak))
+                    File.Delete(bak);
+                File.Replace(tmp, cfgPath, bak);
+            }
+            finally
+            {
+                if(File.Exists(tmp))
+                    File.Delete(tmp);
+            }
         }
 
         private void CreateJob(HttpListenerContext ctx, Dictionary<string, object> job)
         {
-            if(job == null)
+            if(!TryValidateJobPayload(job, out var validationError))
             {
-                WriteJson(ctx, new { ok = false, error = "Invalid body" }, 400);
+                WriteJson(ctx, new { ok = false, error = validationError }, 400);
                 return;
             }
 
-            bool Missing(string k) => !job.TryGetValue(k, out var v) || string.IsNullOrWhiteSpace(Convert.ToString(v));
-
-            if(Missing("Id") || Missing("Command") || Missing("CronExpression"))
+            var id = Convert.ToString(job["Id"]);
+            lock (ConfigWriteLock)
             {
-                WriteJson(ctx, new { ok = false, error = "Id, Command, CronExpression are required" }, 400);
-                return;
-            }
-
-            try
-            {
-                CronExpression.Parse(Convert.ToString(job["CronExpression"]));
-            } catch(Exception ex)
-            {
-                WriteJson(ctx, new { ok = false, error = $"Invalid cron: {ex.Message}" }, 400);
-                return;
-            }
-
-            if(job.TryGetValue("TimeZone", out var tz) && !string.IsNullOrWhiteSpace(Convert.ToString(tz)))
-            {
-                if(!TimeZoneHelper.IsValidTimeZone(Convert.ToString(tz), out var tzError))
+                var list = ReadJobsRaw();
+                if(list.Any(
+                    x => string.Equals(Convert.ToString(x.GetValueOrDefault("Id")), id, StringComparison.OrdinalIgnoreCase)))
                 {
-                    WriteJson(ctx, new { ok = false, error = $"Invalid TimeZone: {tzError}" }, 400);
+                    WriteJson(ctx, new { ok = false, error = "Id already exists" }, 409);
                     return;
                 }
-            }
 
-            var list = ReadJobsRaw();
-            var id = Convert.ToString(job["Id"]);
-            if(list.Any(
-                x => string.Equals(Convert.ToString(x.GetValueOrDefault("Id")), id, StringComparison.OrdinalIgnoreCase)))
-            {
-                WriteJson(ctx, new { ok = false, error = "Id already exists" }, 409);
-                return;
+                list.Add(job);
+                WriteJobsRaw(list);
             }
-
-            list.Add(job);
-            WriteJobsRaw(list);
             WriteJson(ctx, new { ok = true }, 200);
         }
 
         private void UpdateJob(HttpListenerContext ctx, string id, Dictionary<string, object> incoming)
         {
-            var list = ReadJobsRaw();
-            var idx = list.FindIndex(
-                x => string.Equals(Convert.ToString(x.GetValueOrDefault("Id")), id, StringComparison.OrdinalIgnoreCase));
-            if(idx < 0)
-            {
-                WriteJson(ctx, new { ok = false, error = "Not found" }, 404);
-                return;
-            }
-
             incoming ??= new();
             incoming["Id"] = id;
 
-            if(incoming.TryGetValue("CronExpression", out var cron) &&
-                !string.IsNullOrWhiteSpace(Convert.ToString(cron)))
+            if(!TryValidateJobPayload(incoming, out var validationError))
             {
-                try
-                {
-                    CronExpression.Parse(Convert.ToString(cron));
-                } catch(Exception ex)
-                {
-                    WriteJson(ctx, new { ok = false, error = $"Invalid cron: {ex.Message}" }, 400);
-                    return;
-                }
+                WriteJson(ctx, new { ok = false, error = validationError }, 400);
+                return;
             }
 
-            list[idx] = incoming;
-            WriteJobsRaw(list);
+            lock (ConfigWriteLock)
+            {
+                var list = ReadJobsRaw();
+                var idx = list.FindIndex(
+                    x => string.Equals(Convert.ToString(x.GetValueOrDefault("Id")), id, StringComparison.OrdinalIgnoreCase));
+                if(idx < 0)
+                {
+                    WriteJson(ctx, new { ok = false, error = "Not found" }, 404);
+                    return;
+                }
+
+                list[idx] = incoming;
+                WriteJobsRaw(list);
+            }
             WriteJson(ctx, new { ok = true }, 200);
+        }
+
+        private bool TryValidateJobPayload(Dictionary<string, object> job, out string error)
+        {
+            if(job == null)
+            {
+                error = "Invalid body";
+                return false;
+            }
+
+            var candidate = JsonSerializer.Deserialize<ScheduledCommand>(
+                JsonSerializer.Serialize(job),
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            if(candidate == null)
+            {
+                error = "Body must contain a job object.";
+                return false;
+            }
+
+            var defaultTimeZone = _configuration["Scheduler:DefaultTimeZone"] ?? "UTC";
+            var report = ConfigValidator.Validate(new List<ScheduledCommand> { candidate }, defaultTimeZone);
+            var result = report.Jobs.Single();
+            if(result.IsValid)
+            {
+                error = string.Empty;
+                return true;
+            }
+
+            error = string.Join("; ", result.Problems);
+            return false;
         }
 
         private void DeleteJob(HttpListenerContext ctx, string id)
         {
-            var list = ReadJobsRaw();
-            var newList = list.Where(
-                x => !string.Equals(Convert.ToString(x.GetValueOrDefault("Id")), id, StringComparison.OrdinalIgnoreCase))
-                .ToList();
-            WriteJobsRaw(newList);
+            lock (ConfigWriteLock)
+            {
+                var list = ReadJobsRaw();
+                var newList = list.Where(
+                    x => !string.Equals(Convert.ToString(x.GetValueOrDefault("Id")), id, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                WriteJobsRaw(newList);
+            }
             WriteJson(ctx, new { ok = true }, 200);
         }
 
-        private static string ReadBody(HttpListenerContext ctx)
+        private string ReadBody(HttpListenerContext ctx)
         {
-            using var sr = new StreamReader(ctx.Request.InputStream, ctx.Request.ContentEncoding ?? Encoding.UTF8);
-            return sr.ReadToEnd();
+            var contentType = ctx.Request.ContentType;
+            if (string.IsNullOrWhiteSpace(contentType) ||
+                !contentType.StartsWith("application/json", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new UnsupportedMediaTypeException("Content-Type must be application/json.");
+            }
+
+            var configuredLimit = _options.Value.MaxRequestBodyBytes;
+            var maxBytes = Math.Clamp(configuredLimit, 1024, 1024 * 1024);
+            return HttpRequestBodyReader.Read(
+                ctx.Request.InputStream,
+                ctx.Request.ContentEncoding ?? Encoding.UTF8,
+                ctx.Request.ContentLength64,
+                maxBytes);
         }
 
         private static void WriteJson(HttpListenerContext ctx, object obj, int statusCode)
