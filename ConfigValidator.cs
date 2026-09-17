@@ -16,7 +16,7 @@ namespace RunCommandsService
     {
         public class JobValidationResult
         {
-            public string Id { get; set; }
+            public string Id { get; set; } = string.Empty;
             public bool IsValid { get; set; }
             public List<string> Problems { get; } = new List<string>();
         }
@@ -74,6 +74,20 @@ namespace RunCommandsService
 
             if (monitoring.Dashboard.Enabled && monitoring.Dashboard.AutoRefreshSeconds <= 0)
                 report.ConfigurationProblems.Add("Monitoring:Dashboard:AutoRefreshSeconds must be greater than zero.");
+
+            if (monitoring.ExecutionHistory == null)
+            {
+                report.ConfigurationProblems.Add("Monitoring:ExecutionHistory must be a JSON object when specified.");
+            }
+            else if (monitoring.ExecutionHistory.Enabled)
+            {
+                if (string.IsNullOrWhiteSpace(monitoring.ExecutionHistory.DatabasePath))
+                    report.ConfigurationProblems.Add("Monitoring:ExecutionHistory:DatabasePath is required when history is enabled.");
+                if (monitoring.ExecutionHistory.RetentionDays < 1 || monitoring.ExecutionHistory.RetentionDays > 3650)
+                    report.ConfigurationProblems.Add("Monitoring:ExecutionHistory:RetentionDays must be between 1 and 3650.");
+                if (monitoring.ExecutionHistory.MaxRecords < 100 || monitoring.ExecutionHistory.MaxRecords > 10_000_000)
+                    report.ConfigurationProblems.Add("Monitoring:ExecutionHistory:MaxRecords must be between 100 and 10000000.");
+            }
 
             // Security checks for default secrets
             var enableHttp = configuration.GetValue<bool>("Monitoring:EnableHttpEndpoint");

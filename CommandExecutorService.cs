@@ -7,20 +7,29 @@ using Microsoft.Extensions.Options;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.Versioning;
+using System.Text.Json.Serialization;
 
 namespace RunCommandsService
 {
-    public class CommandExecutorService : BackgroundService
+    public sealed record ManualRunResult(bool Accepted, string? Error = null);
+
+    public interface IManualJobRunner
+    {
+        ManualRunResult QueueManualRun(string jobId);
+    }
+
+    public class CommandExecutorService : BackgroundService, IManualJobRunner
     {
         private readonly IConfiguration _configuration;
         private readonly ILogger<CommandExecutorService> _logger;
         private readonly ExecutionMonitor _monitor;
         private readonly AsyncKeyedLocker<string> _concurrency;
         private readonly SchedulerOptions _schedOptions;
-        private FileSystemWatcher _configWatcher;
+        private readonly IHostApplicationLifetime _applicationLifetime;
+        private FileSystemWatcher? _configWatcher;
         private readonly AsyncNonKeyedLocker _parallelism;
 
-        private List<ScheduledCommand> _commands = new();
+        private List<ScheduledCommand?> _commands = new();
         private readonly Lock _lockObject = new();
 
         // Next run storage (UTC) by job id
@@ -42,12 +51,14 @@ namespace RunCommandsService
             IOptions<SchedulerOptions> schedOptions,
             ExecutionMonitor monitor,
             AsyncKeyedLocker<string> concurrency,
+            IHostApplicationLifetime applicationLifetime,
             ILogger<CommandExecutorService> logger)
         {
             _configuration = configuration;
             _schedOptions = schedOptions.Value;
             _monitor = monitor;
             _concurrency = concurrency;
+            _applicationLifetime = applicationLifetime;
             _logger = logger;
 
             _parallelism = new(Math.Max(1, _schedOptions.MaxParallelism));
@@ -64,7 +75,7 @@ namespace RunCommandsService
 
         // ---------- Helpers ----------
 
-        private static bool TryParseCron(string text, out CronExpression cron, out string error)
+        private static bool TryParseCron(string text, out CronExpression? cron, out string? error)
         {
             try
             {
@@ -120,15 +131,12 @@ namespace RunCommandsService
             var now = DateTime.UtcNow;
             List<ScheduledCommand> snapshot;
             lock (_lockObject)
-                snapshot = _commands?.ToList() ?? new List<ScheduledCommand>();
+                snapshot = _commands.OfType<ScheduledCommand>().ToList();
 
             var schedule = snapshot.Select(
                 c =>
                 {
-                    if (c == null)
-                        c = new ScheduledCommand();
-
-                    string nextRun = null;
+                    string? nextRun = null;
                     if (c.Cron != null)
                     {
                         var next = SafeNextOccurrenceUtc(c.Cron, now, TZ(c.TimeZone));
@@ -144,7 +152,7 @@ namespace RunCommandsService
                         TimeZone = string.IsNullOrWhiteSpace(c.TimeZone) ? "UTC" : c.TimeZone,
                         Enabled = c.Enabled,
                         AllowParallelRuns = c.AllowParallelRuns,
-                        ConcurrencyKey = c.ConcurrencyKey,
+                        ConcurrencyKey = c.ConcurrencyKey ?? string.Empty,
                         MaxRuntimeMinutes = c.MaxRuntimeMinutes,
                         Retry = c.Retry ?? new RetryOptions(),
                         NextRunUtc = nextRun,
@@ -161,8 +169,8 @@ namespace RunCommandsService
         {
             lock (_lockObject)
             {
-                _commands = _configuration.GetSection("ScheduledCommands").Get<List<ScheduledCommand>>() ??
-                    new List<ScheduledCommand>();
+                _commands = _configuration.GetSection("ScheduledCommands").Get<List<ScheduledCommand?>>() ??
+                    new List<ScheduledCommand?>();
 
                 var now = DateTime.UtcNow;
                 var validJobs = 0;
@@ -177,7 +185,8 @@ namespace RunCommandsService
                     _logger.LogWarning("Configuration security warning: {Warning}", warning);
 
                 var duplicateIds = _commands
-                    .Where(c => c != null && !string.IsNullOrWhiteSpace(c.Id))
+                    .OfType<ScheduledCommand>()
+                    .Where(c => !string.IsNullOrWhiteSpace(c.Id))
                     .GroupBy(c => c.Id.Trim(), StringComparer.OrdinalIgnoreCase)
                     .Where(g => g.Count() > 1)
                     .Select(g => g.Key)
@@ -221,17 +230,18 @@ namespace RunCommandsService
                     if (string.IsNullOrWhiteSpace(c.TimeZone))
                         c.TimeZone = _schedOptions.DefaultTimeZone;
 
-                    if (duplicateIds.Contains(c.Id?.Trim() ?? string.Empty))
+                    var jobId = c.Id;
+                    if (duplicateIds.Contains(jobId.Trim()))
                     {
                         c.Cron = null;
-                        _nextRunUtc[c.Id] = null;
+                        _nextRunUtc[jobId] = null;
                         if (c.Enabled)
                         {
                             invalidCronJobs++;
                             const string duplicateError = "duplicate Id (job IDs are case-insensitive)";
-                            if (_invalidScheduleLogged.Add(c.Id))
-                                _logger.LogError("Job {Id}: {Error}. Job will be skipped until fixed.", c.Id, duplicateError);
-                            validationIssues.Add($"  • Job '{c.Id}': {duplicateError}");
+                            if (_invalidScheduleLogged.Add(jobId))
+                                _logger.LogError("Job {Id}: {Error}. Job will be skipped until fixed.", jobId, duplicateError);
+                            validationIssues.Add($"  • Job '{jobId}': {duplicateError}");
                         }
                         else
                         {
@@ -241,7 +251,7 @@ namespace RunCommandsService
                     }
 
                     // Allow logging again if a previously-bad cron was fixed
-                    _invalidScheduleLogged.Remove(c.Id);
+                    _invalidScheduleLogged.Remove(jobId);
 
                     // Validate timezone with detailed result
                     var tzResult = TimeZoneHelper.FindTimeZoneWithResult(c.TimeZone);
@@ -252,15 +262,15 @@ namespace RunCommandsService
                     }
 
                     // ---- FIX: declare & init before the condition ----
-                    CronExpression cron = null;
-                    string cronErr = null;
+                    CronExpression? cron = null;
+                    string? cronErr = null;
                     bool hasCron = !string.IsNullOrWhiteSpace(c.CronExpression);
                     bool parsed = hasCron && TryParseCron(c.CronExpression, out cron, out cronErr);
 
-                    if (parsed)
+                    if (parsed && cron != null)
                     {
                         c.Cron = cron;
-                        _nextRunUtc[c.Id] = SafeNextOccurrenceUtc(cron, now, TZ(c.TimeZone));
+                        _nextRunUtc[jobId] = SafeNextOccurrenceUtc(cron, now, TZ(c.TimeZone));
 
                         if (c.Enabled)
                             validJobs++;
@@ -270,17 +280,17 @@ namespace RunCommandsService
                     else
                     {
                         c.Cron = null;
-                        _nextRunUtc[c.Id] = null;
+                        _nextRunUtc[jobId] = null;
 
                         // Only complain for enabled jobs
                         if (c.Enabled)
                         {
                             invalidCronJobs++;
                             var err = !hasCron ? "missing CronExpression" : $"invalid CronExpression — {cronErr}";
-                            if (_invalidScheduleLogged.Add(c.Id))
-                                _logger.LogError("Job {Id}: {Error}. Job will be skipped until fixed.", c.Id, err);
+                            if (_invalidScheduleLogged.Add(jobId))
+                                _logger.LogError("Job {Id}: {Error}. Job will be skipped until fixed.", jobId, err);
 
-                            validationIssues.Add($"  • Job '{c.Id}': {err}");
+                            validationIssues.Add($"  • Job '{jobId}': {err}");
                         }
                         else
                         {
@@ -368,7 +378,7 @@ namespace RunCommandsService
                     // Keep dashboard fresh
                     RefreshMonitorSnapshot();
 
-                    List<ScheduledCommand> currentCommands;
+                    List<ScheduledCommand?> currentCommands;
                     lock (_lockObject)
                         currentCommands = _commands.ToList();
 
@@ -490,7 +500,34 @@ namespace RunCommandsService
 
         // ---------- Command runner ----------
 
-        private async Task RunCommandAsync(ScheduledCommand command, CancellationToken ct)
+        public ManualRunResult QueueManualRun(string jobId)
+        {
+            if (string.IsNullOrWhiteSpace(jobId))
+                return new ManualRunResult(false, "Job id is required.");
+
+            ScheduledCommand? command;
+            lock (_lockObject)
+            {
+                command = _commands.FirstOrDefault(candidate =>
+                    string.Equals(candidate?.Id, jobId, StringComparison.OrdinalIgnoreCase));
+            }
+
+            if (command == null)
+                return new ManualRunResult(false, "Job not found.");
+            if (string.IsNullOrWhiteSpace(command.Command) || string.IsNullOrWhiteSpace(command.Id))
+                return new ManualRunResult(false, "Job configuration is invalid.");
+
+            var snapshot = command.CloneForExecution();
+            _ = Task.Run(
+                () => RunCommandAsync(snapshot, _applicationLifetime.ApplicationStopping, "manual"),
+                _applicationLifetime.ApplicationStopping);
+            return new ManualRunResult(true);
+        }
+
+        private async Task RunCommandAsync(
+            ScheduledCommand command,
+            CancellationToken ct,
+            string triggerSource = "scheduled")
         {
             var retry = RetryPolicy.Normalize(command.Retry);
             var overallStart = DateTime.UtcNow;
@@ -520,7 +557,8 @@ namespace RunCommandsService
                             StartUtc = DateTime.UtcNow,
                             EndUtc = DateTime.UtcNow,
                             Success = true,
-                            SkippedDueToConflict = true
+                            SkippedDueToConflict = true,
+                            TriggerSource = triggerSource
                         });
                     return;
                 }
@@ -593,7 +631,8 @@ namespace RunCommandsService
                         AttemptCount = attemptsCompleted,
                         MaxAttempts = retry.MaxAttempts,
                         RetryExhausted = exhausted,
-                        TimedOut = lastResult.FailureKind == RetryFailureKind.Timeout
+                        TimedOut = lastResult.FailureKind == RetryFailureKind.Timeout,
+                        TriggerSource = triggerSource
                     });
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -610,7 +649,8 @@ namespace RunCommandsService
                             EndUtc = DateTime.UtcNow,
                             Success = true,
                             AttemptCount = attemptsCompleted,
-                            MaxAttempts = retry.MaxAttempts
+                            MaxAttempts = retry.MaxAttempts,
+                            TriggerSource = triggerSource
                         });
                 }
             }
@@ -813,13 +853,13 @@ namespace RunCommandsService
 
     public class ScheduledCommand
     {
-        public string Id { get; set; }
+        public string Id { get; set; } = string.Empty;
 
-        public string Command { get; set; }
+        public string Command { get; set; } = string.Empty;
 
-        public string CronExpression { get; set; }
+        public string CronExpression { get; set; } = string.Empty;
 
-        public string TimeZone { get; set; }
+        public string TimeZone { get; set; } = "UTC";
 
         public bool Enabled { get; set; } = true;
 
@@ -827,7 +867,7 @@ namespace RunCommandsService
 
         public bool AllowParallelRuns { get; set; } = false;
 
-        public string ConcurrencyKey { get; set; }
+        public string? ConcurrencyKey { get; set; }
 
         public bool AlertOnFail { get; set; } = true;
 
@@ -839,21 +879,42 @@ namespace RunCommandsService
 
         public bool QuietStartLog { get; set; } = false;  // per-job: hide "Executing ..." info line
 
-        public string CustomAlertMessage { get; set; }    // optional hint in alert emails
+        public string? CustomAlertMessage { get; set; }    // optional hint in alert emails
 
         public RetryOptions Retry { get; set; } = new();
 
         // runtime (not bound)
-        public CronExpression Cron { get; set; }
+        [JsonIgnore]
+        public CronExpression? Cron { get; set; }
+
+        public ScheduledCommand CloneForExecution() => new()
+        {
+            Id = Id,
+            Command = Command,
+            CronExpression = CronExpression,
+            TimeZone = TimeZone,
+            Enabled = Enabled,
+            MaxRuntimeMinutes = MaxRuntimeMinutes,
+            AllowParallelRuns = AllowParallelRuns,
+            ConcurrencyKey = ConcurrencyKey,
+            AlertOnFail = AlertOnFail,
+            CaptureOutput = CaptureOutput,
+            MaxOutputKB = MaxOutputKB,
+            TreatStdErrAsFailure = TreatStdErrAsFailure,
+            QuietStartLog = QuietStartLog,
+            CustomAlertMessage = CustomAlertMessage,
+            Retry = RetryPolicy.Normalize(Retry),
+            Cron = Cron
+        };
     }
 
     public static class WindowsServiceHelpers
     {
         public class ServiceProperties
         {
-            public string DisplayName { get; set; }
+            public string DisplayName { get; set; } = string.Empty;
 
-            public string Description { get; set; }
+            public string Description { get; set; } = string.Empty;
         }
 
         [SupportedOSPlatform("windows")]

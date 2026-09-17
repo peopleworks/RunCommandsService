@@ -401,6 +401,9 @@
             <label class="pill"><input id="pause" type="checkbox"> Pause</label>
             <input id="search" type="text" placeholder="Filter jobs by id / key / cron…" />
             <button id="btnNew" class="pill">+ New job</button>
+            <button id="btnExport" class="pill">Export jobs</button>
+            <button id="btnImport" class="pill">Import jobs</button>
+            <input id="importFile" type="file" accept="application/json,.json" hidden>
             <button id="btnRaw" class="pill">Raw JSON</button>
             <span id="status" class="muted"></span>
         </div>
@@ -427,8 +430,11 @@
                                 <col style="width:12%">
                                 <col style="width:8%">
                                 <col style="width:10%">
+                                <col style="width:8%">
                                 <col style="width:10%">
-                                <col style="width:16%">
+                                <col style="width:7%">
+                                <col style="width:9%">
+                                <col style="width:8%">
                                 <col style="width:8%">
                             </colgroup>
                             <thead>
@@ -440,8 +446,11 @@
                                     <th>Parallel</th>
                                     <th>Max (min)</th>
                                     <th>Attempts</th>
+                                    <th>Retries</th>
+                                    <th>Avg</th>
                                     <th>Next run</th>
                                     <th>Enabled</th>
+                                    <th>Action</th>
                                 </tr>
                             </thead>
                             <tbody></tbody>
@@ -463,9 +472,10 @@
                                 <col style="width:12%">
                                 <col style="width:12%">
                                 <col style="width:18%">
+                                <col style="width:18%">
                             </colgroup>
                             <thead>
-                                <tr><th>When (Local)</th><th>Id</th><th>Exit</th><th>Attempts</th><th>Duration</th><th>Status</th><th>Error</th></tr>
+                                <tr><th>When (Local)</th><th>Id</th><th>Trigger</th><th>Exit</th><th>Attempts</th><th>Duration</th><th>Status</th><th>Error</th></tr>
                             </thead>
                             <tbody></tbody>
                         </table>
@@ -579,6 +589,21 @@
       return data;
     }
 
+    function adminKey(){
+      let key = localStorage.getItem('adminKey');
+      if(!key){ key = prompt('Admin Key'); if(key) localStorage.setItem('adminKey', key); }
+      return key;
+    }
+
+    async function authorizedFetch(path, options={}){
+      const key = adminKey(); if(!key) throw new Error('Admin key required');
+      const res = await fetch(API_BASE+path, {...options, headers:{...(options.headers||{}),'X-Admin-Key':key}});
+      const ct = res.headers.get('content-type') || '';
+      const data = ct.includes('application/json') ? await res.json() : await res.text();
+      if(!res.ok) throw new Error((data && data.error) || `HTTP ${res.status}`);
+      return data;
+    }
+
     const autoSeconds = parseInt('{{AUTO_REFRESH_SECONDS}}',10) || 5;
     let timer=null, logTimer=null;
 
@@ -614,10 +639,13 @@
 
         const jobs = (d.scheduled || d.Scheduled || []);
         const exec = (d.recent || d.Recent || []);
-        const total = exec.length,
-              ok = exec.filter(ev => !!p(ev,'success','Success')).length,
-              fail = exec.filter(ev => !p(ev,'success','Success') && !p(ev,'skippedDueToConflict','SkippedDueToConflict')).length;
-        const avg = total ? Math.round(exec.reduce((s,ev)=>s+(Number(p(ev,'durationMs','DurationMs'))||0),0)/total) : null;
+        const metrics = (d.metrics || d.Metrics || []);
+        const metricById = new Map(metrics.map(m => [String(p(m,'commandId','CommandId')||'').toLowerCase(),m]));
+        const total = metrics.reduce((sum,m)=>sum+(Number(p(m,'totalRuns','TotalRuns'))||0),0),
+              ok = metrics.reduce((sum,m)=>sum+(Number(p(m,'successfulRuns','SuccessfulRuns'))||0),0),
+              fail = metrics.reduce((sum,m)=>sum+(Number(p(m,'failedRuns','FailedRuns'))||0),0);
+        const measured = metrics.reduce((sum,m)=>sum+(Number(p(m,'successfulRuns','SuccessfulRuns'))||0)+(Number(p(m,'failedRuns','FailedRuns'))||0),0);
+        const avg = measured ? Math.round(metrics.reduce((sum,m)=>sum+(Number(p(m,'averageDurationMs','AverageDurationMs'))||0)*((Number(p(m,'successfulRuns','SuccessfulRuns'))||0)+(Number(p(m,'failedRuns','FailedRuns'))||0)),0)/measured) : null;
         document.getElementById('k_total').textContent = total;
         document.getElementById('k_ok').textContent = ok;
         document.getElementById('k_fail').textContent = fail;
@@ -633,6 +661,7 @@
               const tr = document.createElement('tr');
               const retry = p(j,'retry','Retry') || {};
               const maxAttempts = Number(p(retry,'maxAttempts','MaxAttempts')) || 1;
+              const metric = metricById.get(String(p(j,'id','Id')||'').toLowerCase()) || {};
               const nextUtc = p(j,'nextRunUtc','NextRunUtc');
               const nextDisplay = formatLocal(nextUtc) || (nextUtc || '');
               const tip = nextUtc ? ` title="${nextUtc}"` : '';
@@ -643,8 +672,18 @@
                 <td>${p(j,'allowParallelRuns','AllowParallelRuns')?'Yes':'No'}</td>
                 <td>${p(j,'maxRuntimeMinutes','MaxRuntimeMinutes')??''}</td>
                 <td>${maxAttempts > 1 ? maxAttempts : 'Off'}</td>
+                <td>${Number(p(metric,'totalRetries','TotalRetries'))||0}</td>
+                <td>${fmtMs(p(metric,'averageDurationMs','AverageDurationMs'))}</td>
                 <td class="mono wrap"${tip}>${nextDisplay}</td>
                 <td>${p(j,'enabled','Enabled')?'<span class="chip">ON</span>':'<span class="chip">OFF</span>'}</td>`;
+              const action = document.createElement('td');
+              const run = document.createElement('button');
+              run.className = 'pill'; run.textContent = 'Run';
+              run.onclick = async () => {
+                try { await authorizedFetch(`/api/jobs/${encodeURIComponent(p(j,'id','Id'))}/run`, {method:'POST'}); alert('Manual run accepted'); }
+                catch(err){ alert('Run failed: '+(err.message||err)); }
+              };
+              action.appendChild(run); tr.appendChild(action);
               jb.appendChild(tr);
             });
 
@@ -659,9 +698,11 @@
               const stat = sk?'<span class="warn">Skipped (lock)</span>':(ok?'<span class="ok">OK</span>':`<span class="err">${exhausted?'FAIL (retries exhausted)':'FAIL'}</span>`);
               const attemptCount = Number(p(ev,'attemptCount','AttemptCount')) || 1;
               const maxAttempts = Number(p(ev,'maxAttempts','MaxAttempts')) || 1;
+              const trigger = p(ev,'triggerSource','TriggerSource') || 'scheduled';
               const tr=document.createElement('tr');
               tr.innerHTML = `<td class="mono wrap" title="${endUtc || ''}">${endDisplay}</td>
                 <td class="mono" title="${p(ev,'commandId','CommandId')||''}">${p(ev,'commandId','CommandId')||''}</td>
+                <td>${trigger}</td>
                 <td>${p(ev,'exitCode','ExitCode')??''}</td>
                 <td>${attemptCount}/${maxAttempts}</td>
                 <td>${fmtMs(p(ev,'durationMs','DurationMs'))}</td>
@@ -692,6 +733,32 @@
         document.getElementById('logs').textContent='(no logs found or error reading logs)';
       }
     }
+
+    document.getElementById('btnExport').onclick = async () => {
+      try {
+        const data = await authorizedFetch('/api/config/export');
+        const blob = new Blob([JSON.stringify(data,null,2)], {type:'application/json'});
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = `scheduled-commands-${new Date().toISOString().slice(0,10)}.json`;
+        link.click(); URL.revokeObjectURL(link.href);
+      } catch(err) { alert('Export failed: '+(err.message||err)); }
+    };
+
+    document.getElementById('btnImport').onclick = () => document.getElementById('importFile').click();
+    document.getElementById('importFile').onchange = async event => {
+      const file = event.target.files && event.target.files[0]; if(!file) return;
+      try {
+        const data = JSON.parse(await file.text());
+        const mode = confirm('Merge with existing jobs?\nOK = merge, Cancel = replace all jobs') ? 'merge' : 'replace';
+        data.mode = mode;
+        const result = await authorizedFetch('/api/config/import', {
+          method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)
+        });
+        alert(`Imported ${result.imported} job(s); ${result.total} total.`); load();
+      } catch(err) { alert('Import failed: '+(err.message||err)); }
+      finally { event.target.value=''; }
+    };
 
     load(); loadLogs(); startTimer();
 
@@ -738,8 +805,7 @@
       };
       if(!job.Id || !job.Command || !job.CronExpression){ alert('Id, Command, Cron are required'); return; }
 
-      let key = localStorage.getItem('adminKey');
-      if(!key){ key = prompt('Admin Key'); if(!key) return; localStorage.setItem('adminKey', key); }
+      const key = adminKey(); if(!key) return;
 
       try{
         await postJson('/api/jobs', job, { 'X-Admin-Key': key });

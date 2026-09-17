@@ -12,7 +12,7 @@ public class Program
     public static int Main(string[] args)
     {
         // --validate / --check: validate the configuration and exit without executing anything.
-        if (args != null && Array.Exists(args, a =>
+        if (Array.Exists(args, a =>
                 string.Equals(a, "--validate", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(a, "--check", StringComparison.OrdinalIgnoreCase)))
         {
@@ -42,13 +42,16 @@ public class Program
             .UseWindowsService(options =>
             {
                 options.ServiceName = "Scheduled Command Executor";
-                ServiceHelpers.SetServiceProperties(
-                    "Scheduled Command Executor",
-                    new ServiceHelpers.ServiceProperties
-                    {
-                        DisplayName = "Scheduled Command Executor Service",
-                        Description = "Executes cron-based commands with monitoring, alerts, and safe concurrency"
-                    });
+                if (OperatingSystem.IsWindows())
+                {
+                    ServiceHelpers.SetServiceProperties(
+                        "Scheduled Command Executor",
+                        new ServiceHelpers.ServiceProperties
+                        {
+                            DisplayName = "Scheduled Command Executor Service",
+                            Description = "Executes cron-based commands with monitoring, alerts, and safe concurrency"
+                        });
+                }
             })
             // Ensure relative paths resolve to the service folder (important when running as a Windows Service)
             .UseContentRoot(AppDomain.CurrentDomain.BaseDirectory)
@@ -79,11 +82,14 @@ public class Program
 
                 // Core singletons
                 services.AddSingleton(new AsyncKeyedLocker<string>());
+                services.AddSingleton<ExecutionHistoryStore>();
                 services.AddSingleton<ExecutionMonitor>();
+                services.AddSingleton<CommandExecutorService>();
+                services.AddSingleton<IManualJobRunner>(provider => provider.GetRequiredService<CommandExecutorService>());
 
                 // Hosted services
                 services.AddHostedService<Monitoring>();               // dashboard + APIs
-                services.AddHostedService<CommandExecutorService>();   // scheduler/executor
+                services.AddHostedService(provider => provider.GetRequiredService<CommandExecutorService>()); // scheduler/executor
 
                 // Back-compat (noop). Keep only if your solution still references it.
                 services.AddHostedService<HealthHttpServerService>();

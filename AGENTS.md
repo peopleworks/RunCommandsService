@@ -3,7 +3,7 @@
 
 Operational guide for running, extending, and automating **Scheduled Command Executor** with an LLM from the command line.
 
-> Latest release: **v2.10.0** — opt-in per-job retries with bounded exponential backoff, jitter, failure filters, dashboard visibility, and 70 automated tests.
+> Latest release: **v2.11.0** — persistent SQLite history, per-job metrics, protected manual runs, configuration import/export, and 74 automated tests.
 
 > Target stack: **.NET 10.0**, Windows (service or console), `Cronos` for cron parsing, `HttpListener` for the dashboard/API.
 
@@ -93,6 +93,7 @@ RunCommandsService/
 ├─ ConcurrencyManager.cs           # Keys + parallel run control
 ├─ SchedulerOptions.cs             # Poll seconds, defaults
 ├─ Monitoring.cs                   # HttpListener API + serves dashboard.html
+├─ ExecutionHistoryStore.cs        # SQLite history + retention + metrics
 ├─ dashboard.html                  # Single-file responsive UI
 ├─ FileLogger.cs                   # Rolling logs
 ├─ HealthHttpServerService.cs      # (noop placeholder)
@@ -187,6 +188,12 @@ sc.exe start "ScheduledCommandExecutor"
     "EnableHttpEndpoint": true,
     "MaxRequestBodyBytes": 65536,
     "HttpPrefixes": [ "http://localhost:5058/" ],
+    "ExecutionHistory": {
+      "Enabled": true,
+      "DatabasePath": "Data/executions.db",
+      "RetentionDays": 90,
+      "MaxRecords": 100000
+    },
     "Dashboard": {
       "Enabled": true,
       "Title": "Scheduled Command Executor",
@@ -236,11 +243,28 @@ sc.exe start "ScheduledCommandExecutor"
 ### `GET /api/health`
 
 * Returns:
-  `version, nowUtc, recent[], scheduled[], consecutiveFailures{}, ui{ showRawJsonToggle }`
+  `version, nowUtc, recent[], metrics[], scheduled[], consecutiveFailures{}, history{}, ui{ showRawJsonToggle }`
 
 ```powershell
 curl http://localhost:5058/api/health
 ```
+
+### `GET /api/history?jobId=<ID>&limit=100`
+
+* Reads retained SQLite history; `limit` is clamped to `1..5000`.
+
+### `POST /api/jobs/{id}/run`
+
+* Requires `X-Admin-Key`; returns HTTP 202 and uses the normal lock, parallelism, timeout, and retry pipeline.
+
+```powershell
+curl -X POST -H "X-Admin-Key: CHANGE-ME" http://localhost:5058/api/jobs/SchedulerSelfTest/run
+```
+
+### `GET /api/config/export` / `POST /api/config/import`
+
+* Both require `X-Admin-Key`; export contains only `ScheduledCommands` and never monitoring secrets.
+* Import accepts `{ "mode":"replace|merge", "scheduledCommands":[...] }`, validates the final set, then performs the existing atomic write with backup.
 
 ### `GET /api/logs?tailKb=128`
 
@@ -287,7 +311,24 @@ curl -H "Content-Type: application/json" -H "X-Admin-Key: CHANGE-ME" -d $body ht
 
 ---
 
-## 13) What's new v2.10.0 (for agents)
+## 13) What's new v2.11.0 (for agents)
+
+Core Engineer
+- Final logical execution results persist in SQLite and are restored after restart; retention is bounded by age and row count.
+- Manual runs use the same concurrency key, global capacity, timeout, retry, final-result, and shutdown semantics as scheduled runs.
+- The main service project builds with zero compiler/analyzer warnings.
+
+Monitoring / API
+- `/api/health` exposes per-job success/failure, retry, timeout, and duration metrics; `/api/history` queries retained events.
+- Protected manual run and configuration import/export endpoints use the existing constant-time admin-key validation.
+- Dashboard shows metrics, trigger source, Run, Import, and Export controls.
+
+Testing
+- 74 xUnit tests include SQLite reopen/persistence, filtering, aggregation, and history-option validation.
+
+---
+
+### Previous: What's new v2.10.0
 
 Core Engineer
 - Retries are opt-in through `ScheduledCommand.Retry`; `MaxAttempts=1` preserves prior behavior.

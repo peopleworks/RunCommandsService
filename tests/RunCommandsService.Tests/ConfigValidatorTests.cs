@@ -6,6 +6,26 @@ namespace RunCommandsService.Tests;
 public class ConfigValidatorTests
 {
     [Fact]
+    public void Validate_RejectsInvalidExecutionHistoryLimits()
+    {
+        var values = new Dictionary<string, string?>
+        {
+            ["Monitoring:EnableHttpEndpoint"] = "false",
+            ["Monitoring:ExecutionHistory:Enabled"] = "true",
+            ["Monitoring:ExecutionHistory:DatabasePath"] = "",
+            ["Monitoring:ExecutionHistory:RetentionDays"] = "0",
+            ["Monitoring:ExecutionHistory:MaxRecords"] = "99"
+        };
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(values).Build();
+
+        var report = ConfigValidator.Validate(configuration);
+
+        Assert.Contains(report.ConfigurationProblems, problem => problem.Contains("DatabasePath"));
+        Assert.Contains(report.ConfigurationProblems, problem => problem.Contains("RetentionDays"));
+        Assert.Contains(report.ConfigurationProblems, problem => problem.Contains("MaxRecords"));
+    }
+
+    [Fact]
     public void Validate_RejectsDuplicateIds_IgnoringCaseAndWhitespace()
     {
         var jobs = new List<ScheduledCommand>

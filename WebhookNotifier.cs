@@ -12,8 +12,8 @@ namespace RunCommandsService
     public class WebhookOptions
     {
         public bool Enabled { get; set; } = false;
-        public string Url { get; set; } = null;
-        public string AuthorizationHeader { get; set; } = null; // e.g., "Bearer xyz"
+        public string? Url { get; set; }
+        public string? AuthorizationHeader { get; set; } // e.g., "Bearer xyz"
     }
 
     /// <summary>

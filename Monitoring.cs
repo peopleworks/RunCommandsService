@@ -31,8 +31,10 @@ namespace RunCommandsService
 
         public DashboardOptions Dashboard { get; set; } = new();
 
-        // Admin key for Job Builder write APIs
-        public string AdminKey { get; set; } = null;
+        public ExecutionHistoryOptions ExecutionHistory { get; set; } = new();
+
+        // Admin key for administrative APIs
+        public string? AdminKey { get; set; }
     }
 
     public class DashboardOptions
@@ -113,9 +115,9 @@ Message:  ${CustomMessage}";
 
     public class ExecutionEvent
     {
-        public string CommandId { get; set; }
+        public string CommandId { get; set; } = string.Empty;
 
-        public string Command { get; set; }
+        public string Command { get; set; } = string.Empty;
 
         public DateTime StartUtc { get; set; }
 
@@ -127,7 +129,7 @@ Message:  ${CustomMessage}";
 
         public bool SkippedDueToConflict { get; set; }
 
-        public string Error { get; set; }
+        public string? Error { get; set; }
 
         public int DurationMs { get; set; }
 
@@ -138,17 +140,19 @@ Message:  ${CustomMessage}";
         public bool RetryExhausted { get; set; }
 
         public bool TimedOut { get; set; }
+
+        public string TriggerSource { get; set; } = "scheduled";
     }
 
     public class ScheduledCommandView
     {
-        public string Id { get; set; }
+        public string Id { get; set; } = string.Empty;
 
-        public string Command { get; set; }
+        public string Command { get; set; } = string.Empty;
 
-        public string CronExpression { get; set; }
+        public string CronExpression { get; set; } = string.Empty;
 
-        public string TimeZone { get; set; }
+        public string TimeZone { get; set; } = "UTC";
 
         public bool Enabled { get; set; }
 
@@ -160,38 +164,44 @@ Message:  ${CustomMessage}";
 
         public RetryOptions Retry { get; set; } = new();
 
-        public string NextRunUtc { get; set; }
+        public string? NextRunUtc { get; set; }
 
-        public string CustomAlertMessage { get; set; }
+        public string? CustomAlertMessage { get; set; }
     }
 
     public record CronPreviewReq(string Cron, string TimeZone);
 
     public class ScheduledCommandPayload
     {
-        public string Id { get; set; }
+        public string Id { get; set; } = string.Empty;
 
-        public string Command { get; set; }
+        public string Command { get; set; } = string.Empty;
 
-        public string CronExpression { get; set; }
+        public string CronExpression { get; set; } = string.Empty;
 
-        public string TimeZone { get; set; }
+        public string TimeZone { get; set; } = "UTC";
 
         public bool Enabled { get; set; }
 
         public bool AllowParallelRuns { get; set; }
 
-        public string ConcurrencyKey { get; set; }
+        public string? ConcurrencyKey { get; set; }
 
         public int? MaxRuntimeMinutes { get; set; }
 
         public RetryOptions Retry { get; set; } = new();
 
-        public string NextRunUtc { get; set; }
+        public string? NextRunUtc { get; set; }
 
-        public string NextRunLocal { get; set; }
+        public string? NextRunLocal { get; set; }
 
-        public string CustomAlertMessage { get; set; }
+        public string? CustomAlertMessage { get; set; }
+    }
+
+    public sealed class ConfigurationImportRequest
+    {
+        public string Mode { get; set; } = "replace";
+        public List<ScheduledCommand> ScheduledCommands { get; set; } = new();
     }
     #endregion
 
@@ -247,22 +257,28 @@ Message:  ${CustomMessage}";
     #region Execution Monitor
     public class ExecutionMonitor
     {
-        private readonly MonitoringOptions _options;
+        private readonly MonitoringOptions _options = new();
         private readonly IAlertNotifier _notifier;
         private readonly ILogger<ExecutionMonitor> _logger;
         private readonly ILoggerFactory _loggerFactory;
+        private readonly ExecutionHistoryStore _historyStore;
 
         private readonly ConcurrentQueue<ExecutionEvent> _events = new();
         private readonly ConcurrentDictionary<string, int> _consecutiveFailures = new();
         private readonly object _scheduleLock = new();
         private List<ScheduledCommandView> _scheduleSnapshot = new();
-        private Func<object> _schedulerHealthProvider;
+        private Func<object>? _schedulerHealthProvider;
 
-        public ExecutionMonitor(IOptions<MonitoringOptions> options, ILogger<ExecutionMonitor> logger, ILoggerFactory loggerFactory)
+        public ExecutionMonitor(
+            IOptions<MonitoringOptions> options,
+            ILogger<ExecutionMonitor> logger,
+            ILoggerFactory loggerFactory,
+            ExecutionHistoryStore historyStore)
         {
-            _options = options.Value;
+            _options = options.Value ?? new MonitoringOptions();
             _logger = logger;
             _loggerFactory = loggerFactory;
+            _historyStore = historyStore;
             var notifiers = new List<IAlertNotifier> { new EmailNotifier(_options.Notifiers.Email) };
             try
             {
@@ -274,6 +290,12 @@ Message:  ${CustomMessage}";
             }
             catch { /* ignore wiring errors */ }
             _notifier = new CompositeNotifier(notifiers);
+
+            foreach (var execution in _historyStore.GetRecent(5000).Reverse())
+            {
+                _events.Enqueue(execution);
+                ApplyConsecutiveFailure(execution);
+            }
         }
 
         public void UpdateScheduleSnapshot(IEnumerable<ScheduledCommandView> snapshot)
@@ -297,19 +319,18 @@ Message:  ${CustomMessage}";
             {
             } // cap memory
 
+            _historyStore.Append(ev);
+
             // update consecutive failures
-            if(ev.SkippedDueToConflict)
+            var failureCount = ApplyConsecutiveFailure(ev);
+            if (ev.SkippedDueToConflict)
                 return;
-            if(ev.Success)
+            if (!ev.Success)
             {
-                _consecutiveFailures[ev.CommandId] = 0;
-            } else
-            {
-                var n = _consecutiveFailures.AddOrUpdate(ev.CommandId, 1, (_, v) => v + 1);
                 if(_options.AlertOn.EmailOnFail)
-                    FireAlert("Failure", ev, n);
-                if(_options.AlertOn.EmailOnConsecutiveFailures && n >= _options.AlertOn.ConsecutiveFailures)
-                    FireAlert($"Consecutive failures ({n})", ev, n);
+                    FireAlert("Failure", ev, failureCount);
+                if(_options.AlertOn.EmailOnConsecutiveFailures && failureCount >= _options.AlertOn.ConsecutiveFailures)
+                    FireAlert($"Consecutive failures ({failureCount})", ev, failureCount);
             }
 
             // slow run?
@@ -317,6 +338,19 @@ Message:  ${CustomMessage}";
             {
                 FireAlert("Slow run", ev, _consecutiveFailures.GetValueOrDefault(ev.CommandId, 0));
             }
+        }
+
+        private int ApplyConsecutiveFailure(ExecutionEvent ev)
+        {
+            if (ev.SkippedDueToConflict)
+                return _consecutiveFailures.GetValueOrDefault(ev.CommandId, 0);
+            if (ev.Success)
+            {
+                _consecutiveFailures[ev.CommandId] = 0;
+                return 0;
+            }
+
+            return _consecutiveFailures.AddOrUpdate(ev.CommandId, 1, (_, value) => value + 1);
         }
 
         private void FireAlert(string alertType, ExecutionEvent ev, int consecutiveFailCount)
@@ -361,7 +395,7 @@ Message:  ${CustomMessage}";
             var scheduledForPayload = new List<ScheduledCommandPayload>(schedule.Count);
             foreach(var s in schedule)
             {
-                string nextLocal = null;
+                string? nextLocal = null;
                 try
                 {
                     if(!string.IsNullOrWhiteSpace(s.NextRunUtc) &&
@@ -405,6 +439,8 @@ Message:  ${CustomMessage}";
                 nowUtc = DateTime.UtcNow.ToString("o"),
                 recentCount = recent.Count,
                 recent,
+                metrics = _historyStore.GetMetrics(),
+                history = new { enabled = _historyStore.Enabled },
                 consecutiveFailures = _consecutiveFailures.ToDictionary(kv => kv.Key, kv => kv.Value),
                 scheduled = scheduledForPayload,
 
@@ -450,21 +486,31 @@ Message:  ${CustomMessage}";
         private readonly IOptions<MonitoringOptions> _options;
         private readonly ExecutionMonitor _monitor;
         private readonly ILogger<Monitoring> _logger;
+        private readonly IManualJobRunner _manualJobRunner;
+        private readonly ExecutionHistoryStore _historyStore;
 
-        private HttpListener _listener;
-        private string _dashboardPath;
-        private FileSystemWatcher _htmlWatcher;
+        private HttpListener? _listener;
+        private string _dashboardPath = string.Empty;
+        private FileSystemWatcher? _htmlWatcher;
         private static readonly object ConfigWriteLock = new();
+        private static readonly JsonSerializerOptions JsonOptions = new()
+        {
+            PropertyNameCaseInsensitive = true
+        };
 
         public Monitoring(
             IConfiguration configuration,
             IOptions<MonitoringOptions> options,
             ExecutionMonitor monitor,
+            IManualJobRunner manualJobRunner,
+            ExecutionHistoryStore historyStore,
             ILogger<Monitoring> logger)
         {
             _configuration = configuration;
             _options = options;
             _monitor = monitor;
+            _manualJobRunner = manualJobRunner;
+            _historyStore = historyStore;
             _logger = logger;
         }
 
@@ -541,8 +587,8 @@ Message:  ${CustomMessage}";
             try
             {
                 ApplySecurityHeaders(ctx.Response);
-                var path = ctx.Request.Url.AbsolutePath;
-                var pathLower = (path ?? string.Empty).ToLowerInvariant();
+                string path = ctx.Request.Url?.AbsolutePath ?? string.Empty;
+                var pathLower = path.ToLowerInvariant();
                 if(path == "/" || path == "/dashboard")
                 {
                     ServeDashboard(ctx);
@@ -553,6 +599,27 @@ Message:  ${CustomMessage}";
                 } else if(pathLower == "/api/logs")
                 {
                     ServeLogsTail(ctx);
+                } else if(pathLower == "/api/history" && ctx.Request.HttpMethod == "GET")
+                {
+                    ServeHistory(ctx);
+                } else if(pathLower == "/api/config/export" && ctx.Request.HttpMethod == "GET")
+                {
+                    if (!RequireAuthorization(ctx))
+                        return;
+                    ExportConfiguration(ctx);
+                } else if(pathLower == "/api/config/import" && ctx.Request.HttpMethod == "POST")
+                {
+                    if (!RequireAuthorization(ctx))
+                        return;
+                    var body = ReadBody(ctx);
+                    var request = JsonSerializer.Deserialize<ConfigurationImportRequest>(body, JsonOptions)
+                                  ?? throw new JsonException("Body must contain an import object.");
+                    ImportConfiguration(ctx, request);
+                } else if(TryGetManualRunJobId(path, out var manualJobId) && ctx.Request.HttpMethod == "POST")
+                {
+                    if (!RequireAuthorization(ctx))
+                        return;
+                    QueueManualRun(ctx, manualJobId);
                 } else if(pathLower == "/api/jobs" && ctx.Request.HttpMethod == "GET")
                 {
                     var jobs = ReadJobsRaw();
@@ -561,28 +628,22 @@ Message:  ${CustomMessage}";
                     || (path == "/api/jobs/validateCron" && ctx.Request.HttpMethod == "POST"))
                 {
                     var body = ReadBody(ctx);
-                    var dto = JsonSerializer.Deserialize<CronPreviewReq>(body);
+                    var dto = JsonSerializer.Deserialize<CronPreviewReq>(body)
+                              ?? throw new JsonException("Body must contain cron and timeZone.");
                     ValidateCron(ctx, dto);
                 } else if(pathLower == "/api/jobs" && ctx.Request.HttpMethod == "POST")
                 {
-                    if(!IsAuthorized(ctx))
-                    {
-                        ctx.Response.StatusCode = 401;
-                        ctx.Response.Close();
+                    if(!RequireAuthorization(ctx))
                         return;
-                    }
                     var body = ReadBody(ctx);
-                    var job = JsonSerializer.Deserialize<Dictionary<string, object>>(body);
+                    var job = JsonSerializer.Deserialize<Dictionary<string, object?>>(body)
+                              ?? throw new JsonException("Body must contain a job object.");
                     CreateJob(ctx, job);
                 } else if(pathLower.StartsWith("/api/jobs/") &&
                     (ctx.Request.HttpMethod == "PUT" || ctx.Request.HttpMethod == "DELETE"))
                 {
-                    if(!IsAuthorized(ctx))
-                    {
-                        ctx.Response.StatusCode = 401;
-                        ctx.Response.Close();
+                    if(!RequireAuthorization(ctx))
                         return;
-                    }
                     var id = path.Split('/').Last();
                     if(ctx.Request.HttpMethod == "DELETE")
                     {
@@ -590,7 +651,8 @@ Message:  ${CustomMessage}";
                     } else
                     {
                         var body = ReadBody(ctx);
-                        var job = JsonSerializer.Deserialize<Dictionary<string, object>>(body);
+                        var job = JsonSerializer.Deserialize<Dictionary<string, object?>>(body)
+                                  ?? throw new JsonException("Body must contain a job object.");
                         UpdateJob(ctx, id, job);
                     }
                 } else
@@ -732,7 +794,7 @@ Message:  ${CustomMessage}";
                 long read = Math.Min(fs.Length, tailKb * 1024L);
                 buf = new byte[read];
                 fs.Seek(-read, SeekOrigin.End);
-                fs.Read(buf, 0, (int)read);
+                fs.ReadExactly(buf);
             }
 
             ctx.Response.ContentType = "text/plain; charset=utf-8";
@@ -808,25 +870,148 @@ Message:  ${CustomMessage}";
             return SecretMasker.FixedTimeEquals(expected, got);
         }
 
+        private bool RequireAuthorization(HttpListenerContext ctx)
+        {
+            if (IsAuthorized(ctx))
+                return true;
+
+            WriteJson(ctx, new { ok = false, error = "Unauthorized" }, 401);
+            return false;
+        }
+
+        private static bool TryGetManualRunJobId(string path, out string jobId)
+        {
+            var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            if (segments.Length == 4 &&
+                string.Equals(segments[0], "api", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(segments[1], "jobs", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(segments[3], "run", StringComparison.OrdinalIgnoreCase))
+            {
+                jobId = Uri.UnescapeDataString(segments[2]);
+                return !string.IsNullOrWhiteSpace(jobId);
+            }
+
+            jobId = string.Empty;
+            return false;
+        }
+
+        private void QueueManualRun(HttpListenerContext ctx, string jobId)
+        {
+            var result = _manualJobRunner.QueueManualRun(jobId);
+            if (!result.Accepted)
+            {
+                WriteJson(ctx, new { ok = false, error = result.Error },
+                    string.Equals(result.Error, "Job not found.", StringComparison.Ordinal) ? 404 : 409);
+                return;
+            }
+
+            WriteJson(ctx, new { ok = true, accepted = true, jobId, trigger = "manual" }, 202);
+        }
+
+        private void ServeHistory(HttpListenerContext ctx)
+        {
+            var jobId = ctx.Request.QueryString["jobId"];
+            var requestedLimit = int.TryParse(ctx.Request.QueryString["limit"], out var parsed) ? parsed : 100;
+            var limit = Math.Clamp(requestedLimit, 1, 5000);
+            var events = _historyStore.GetRecent(limit, string.IsNullOrWhiteSpace(jobId) ? null : jobId);
+            WriteJson(ctx, new { ok = true, count = events.Count, events }, 200);
+        }
+
+        private void ExportConfiguration(HttpListenerContext ctx)
+        {
+            var jobs = ReadJobsRaw();
+            WriteJson(ctx, new
+            {
+                schemaVersion = 1,
+                exportedAtUtc = DateTime.UtcNow.ToString("O"),
+                scheduledCommands = jobs
+            }, 200);
+        }
+
+        private void ImportConfiguration(HttpListenerContext ctx, ConfigurationImportRequest request)
+        {
+            var mode = request.Mode?.Trim().ToLowerInvariant() ?? "replace";
+            if (mode is not ("replace" or "merge"))
+            {
+                WriteJson(ctx, new { ok = false, error = "Mode must be 'replace' or 'merge'." }, 400);
+                return;
+            }
+
+            var incoming = request.ScheduledCommands ?? new List<ScheduledCommand>();
+            if (incoming.Any(job => job == null))
+            {
+                WriteJson(ctx, new { ok = false, error = "ScheduledCommands cannot contain null entries." }, 400);
+                return;
+            }
+            List<ScheduledCommand> finalJobs;
+            lock (ConfigWriteLock)
+            {
+                if (mode == "merge")
+                {
+                    finalJobs = ReadJobsRaw()
+                        .Select(job => JsonSerializer.Deserialize<ScheduledCommand>(JsonSerializer.Serialize(job), JsonOptions))
+                        .Where(job => job != null)
+                        .Cast<ScheduledCommand>()
+                        .ToList();
+
+                    foreach (var job in incoming)
+                    {
+                        var index = finalJobs.FindIndex(existing =>
+                            string.Equals(existing.Id, job.Id, StringComparison.OrdinalIgnoreCase));
+                        if (index >= 0)
+                            finalJobs[index] = job;
+                        else
+                            finalJobs.Add(job);
+                    }
+                }
+                else
+                {
+                    finalJobs = incoming;
+                }
+
+                var defaultTimeZone = _configuration["Scheduler:DefaultTimeZone"] ?? "UTC";
+                var report = ConfigValidator.Validate(finalJobs, defaultTimeZone);
+                if (!report.AllValid)
+                {
+                    WriteJson(ctx, new
+                    {
+                        ok = false,
+                        error = "Imported jobs failed validation.",
+                        problems = report.Jobs.Where(job => !job.IsValid)
+                    }, 400);
+                    return;
+                }
+
+                var rawJobs = finalJobs.Select(job =>
+                        JsonSerializer.Deserialize<Dictionary<string, object?>>(JsonSerializer.Serialize(job))
+                        ?? throw new JsonException("Unable to serialize imported job."))
+                    .ToList();
+                WriteJobsRaw(rawJobs);
+            }
+
+            WriteJson(ctx, new { ok = true, mode, imported = incoming.Count, total = finalJobs.Count }, 200);
+        }
+
         private static string ConfigPath() => Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "appsettings.json");
 
-        private static List<Dictionary<string, object>> ReadJobsRaw()
+        private static List<Dictionary<string, object?>> ReadJobsRaw()
         {
             var json = File.ReadAllText(ConfigPath(), Encoding.UTF8);
             using var doc = JsonDocument.Parse(json);
             if(!doc.RootElement.TryGetProperty("ScheduledCommands", out var arr) || arr.ValueKind != JsonValueKind.Array)
                 return new();
-            var list = new List<Dictionary<string, object>>();
+            var list = new List<Dictionary<string, object?>>();
             foreach(var el in arr.EnumerateArray())
-                list.Add(JsonSerializer.Deserialize<Dictionary<string, object>>(el.GetRawText()));
+                list.Add(JsonSerializer.Deserialize<Dictionary<string, object?>>(el.GetRawText())
+                         ?? throw new InvalidDataException("ScheduledCommands contains a non-object entry."));
             return list;
         }
 
-        private static void WriteJobsRaw(List<Dictionary<string, object>> list)
+        private static void WriteJobsRaw(List<Dictionary<string, object?>> list)
         {
             var cfgPath = ConfigPath();
             var json = File.ReadAllText(cfgPath, Encoding.UTF8);
-            var dict = JsonSerializer.Deserialize<Dictionary<string, object>>(json)
+            var dict = JsonSerializer.Deserialize<Dictionary<string, object?>>(json)
                        ?? throw new InvalidDataException("appsettings.json must contain a JSON object.");
             dict["ScheduledCommands"] = list;
             var newJson = JsonSerializer.Serialize(dict, new JsonSerializerOptions { WriteIndented = true });
@@ -854,7 +1039,7 @@ Message:  ${CustomMessage}";
             }
         }
 
-        private void CreateJob(HttpListenerContext ctx, Dictionary<string, object> job)
+        private void CreateJob(HttpListenerContext ctx, Dictionary<string, object?> job)
         {
             if(!TryValidateJobPayload(job, out var validationError))
             {
@@ -879,7 +1064,7 @@ Message:  ${CustomMessage}";
             WriteJson(ctx, new { ok = true }, 200);
         }
 
-        private void UpdateJob(HttpListenerContext ctx, string id, Dictionary<string, object> incoming)
+        private void UpdateJob(HttpListenerContext ctx, string id, Dictionary<string, object?> incoming)
         {
             incoming ??= new();
             incoming["Id"] = id;
@@ -907,7 +1092,7 @@ Message:  ${CustomMessage}";
             WriteJson(ctx, new { ok = true }, 200);
         }
 
-        private bool TryValidateJobPayload(Dictionary<string, object> job, out string error)
+        private bool TryValidateJobPayload(Dictionary<string, object?> job, out string error)
         {
             if(job == null)
             {
@@ -1025,19 +1210,19 @@ Message:  ${CustomMessage}";
     #region Small helpers
     internal static class StringReplaceExtensions
     {
-        public static string replaceInsensitive(this string s, string find, string replaceWith) => s?.Replace(
+        public static string replaceInsensitive(this string s, string find, string replaceWith) => s.Replace(
                 find,
                 replaceWith,
-                StringComparison.OrdinalIgnoreCase) ??
-            s;
+                StringComparison.OrdinalIgnoreCase);
     }
 
     public static class DictionaryExtensions
     {
-        public static TValue GetValueOrDefault<TKey, TValue>(
-            this IDictionary<TKey, TValue> d,
+        public static TValue? GetValueOrDefault<TKey, TValue>(
+            this IDictionary<TKey, TValue>? d,
             TKey key,
-            TValue fallback = default) => d != null && d.TryGetValue(key, out var v) ? v : fallback;
+            TValue? fallback = default) where TKey : notnull =>
+            d != null && d.TryGetValue(key, out var v) ? v : fallback;
     }
     #endregion
 }

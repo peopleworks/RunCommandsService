@@ -6,9 +6,9 @@ A lightweight **.NET 10 Windows Service** that runs commands on cron schedules, 
 ![.NET](https://img.shields.io/badge/.NET-10.0-512BD4)
 ![Platform](https://img.shields.io/badge/platform-Windows-0078D6)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Version](https://img.shields.io/badge/version-2.10.0-blue)
+![Version](https://img.shields.io/badge/version-2.11.0-blue)
 
-> **v2.10.0 — Configurable job retries:** bounded exponential backoff with jitter, exit-code filters, optional timeout/exception retries, and attempt visibility in the API and dashboard. See the [Changelog](#-changelog) for the full history.
+> **v2.11.0 — Persistent operations:** SQLite execution history, per-job duration/retry metrics, protected manual runs, and portable job import/export. See the [Changelog](#-changelog) for the full history.
 
 ---
 
@@ -34,6 +34,8 @@ This service lets administrators:
 - **Safe concurrency** — global `MaxParallelism` plus per‑job `ConcurrencyKey` locks to prevent overlap on shared resources.
 - **Runtime limits** — per‑job `MaxRuntimeMinutes` auto‑kills hung processes.
 - **Safe retries** — opt-in per-job attempts with bounded exponential backoff, jitter, and failure filters.
+- **Persistent history & metrics** — SQLite-backed results survive restarts and feed per-job retry/duration statistics.
+- **Manual operations** — run a configured job on demand and import/export job sets through admin-key-protected APIs.
 - **Hot configuration reload** — edits to `appsettings.json` apply without a restart; a bad edit keeps the previous valid config.
 - **Live dashboard** — KPIs, scheduled jobs, recent executions, and a tail of the service logs, all in local time.
 - **Job Builder UI** — create/edit/delete jobs from the dashboard with a cron preview (admin‑key protected).
@@ -95,7 +97,7 @@ flowchart TD
 | Component | Responsibility |
 | --- | --- |
 | ⏰ **Cron Scheduler & Process Executor** | Polls every `PollSeconds`, computes DST-safe next-run times via Cronos, runs due jobs as `cmd.exe` processes with two-layer concurrency, and hot-reloads jobs from `appsettings.json`. |
-| 📊 **Execution Monitor & Event Store** | Central event sink: rolling 5,000-event queue, per-job consecutive-failure tracking, a live schedule snapshot, and the health payload served to the API. |
+| 📊 **Execution Monitor & SQLite Store** | Central event sink: rolling in-memory queue plus retained SQLite history, per-job retry/duration metrics, consecutive-failure tracking, a live schedule snapshot, and health/API payloads. |
 | 🔔 **Alert Notification Pipeline** | `CompositeNotifier` fans alerts out to Email (SMTP) and Webhook (HTTP), each fault-isolated so one channel failure can't block the others. |
 | 🌐 **HTTP Monitoring Server & Job API** | Embedded `HttpListener` serving the live dashboard, `/api/health`, a log-tail endpoint, and an admin-key-gated CRUD REST API with atomic config writes. |
 | 🧩 **Service Host & Bootstrap** | Composition root: wires the DI container, registers the hosted services, installs the file logger, and integrates with the Windows SCM. |
@@ -204,6 +206,7 @@ Configuration lives in `appsettings.json`. A minimal example:
     "MaxRequestBodyBytes": 65536,
     "AdminKey": "put-a-strong-random-key-here",
     "HttpPrefixes": [ "http://localhost:5058/" ],
+    "ExecutionHistory": { "Enabled": true, "DatabasePath": "Data/executions.db", "RetentionDays": 90, "MaxRecords": 100000 },
     "Dashboard": { "Enabled": true, "HtmlPath": "dashboard.html", "AutoRefreshSeconds": 5 },
     "AlertOn": { "ConsecutiveFailures": 2, "SlowRunMs": 60000 },
     "Notifiers": {
@@ -287,6 +290,7 @@ Only enable retries for commands known to be idempotent, or whose duplicate effe
 - `Monitoring.HttpPrefixes` — prefixes for the built‑in HTTP server.
 - `Monitoring.MaxRequestBodyBytes` — maximum JSON request body size, from `1024` to `1048576` bytes (default `65536`). Oversized requests return HTTP 413.
 - `Monitoring.AdminKey` — required (as the `X-Admin-Key` header) for Job Builder write APIs.
+- `Monitoring.ExecutionHistory` — SQLite persistence settings: `Enabled`, `DatabasePath`, `RetentionDays` (`1..3650`), and `MaxRecords` (`100..10000000`).
 
 For deployments, keep the real admin key out of committed JSON and set it with the `Monitoring__AdminKey` environment variable. Plain HTTP should remain bound to loopback; use HTTPS at a reverse proxy for remote access.
 
@@ -316,14 +320,26 @@ Use [crontab.guru](https://crontab.guru/) to experiment, or the dashboard's **Pr
 | --- | --- |
 | `GET /` | HTML monitoring dashboard. |
 | `GET /api/health` | Execution history, KPIs, and scheduler heartbeat (JSON). |
+| `GET /api/history?jobId={id}&limit=100` | Persistent execution history (up to 5,000 records). |
 | `GET /api/logs?tailKb=128` | Last *N* KB of the newest log file (`text/plain`). |
 | `GET /api/jobs` | List current jobs from config. |
 | `POST /api/jobs/validateCron` | Body `{ "cron": "...", "timeZone": "..." }` → next runs preview. |
 | `POST /api/jobs` | Create a job. |
 | `PUT /api/jobs/{id}` | Update a job by id. |
 | `DELETE /api/jobs/{id}` | Delete a job by id. |
+| `POST /api/jobs/{id}/run` | Queue a manual run through normal concurrency/retry controls. |
+| `GET /api/config/export` | Export `ScheduledCommands` only (no monitoring secrets). |
+| `POST /api/config/import` | Import `{ "mode":"replace|merge", "scheduledCommands":[...] }` atomically. |
 
-Write endpoints (`POST`/`PUT`/`DELETE`) require the header `X-Admin-Key: <Monitoring.AdminKey>`. A lowercase alias `POST /api/jobs/validatecron` is also accepted.
+Administrative endpoints (job writes, manual run, import, and export) require the header `X-Admin-Key: <Monitoring.AdminKey>`. A lowercase alias `POST /api/jobs/validatecron` is also accepted. Manual execution also works for a disabled job because it is an explicit operator action.
+
+```powershell
+$headers = @{ "X-Admin-Key" = $env:RCS_ADMIN_KEY }
+Invoke-RestMethod -Method Post -Headers $headers http://localhost:5058/api/jobs/hourly-report/run
+Invoke-RestMethod -Headers $headers http://localhost:5058/api/config/export | ConvertTo-Json -Depth 20 | Set-Content jobs-export.json
+$body = Get-Content jobs-export.json -Raw
+Invoke-RestMethod -Method Post -ContentType application/json -Headers $headers -Body $body http://localhost:5058/api/config/import
+```
 
 ### Scheduler health (`/api/health`)
 
@@ -347,7 +363,9 @@ Open the root URL for a self‑contained UI that shows:
 
 - **KPI cards** — Events, OK, Failed, Avg Duration.
 - **Scheduled Jobs** — cron, time zone, concurrency key, next run (job TZ, hover for UTC).
-- **Recent Executions** — exit code, duration, status (OK / FAIL / Skipped (lock)), in local time.
+- **Scheduled Jobs metrics/actions** — retained retry count, average duration, and protected **Run** action.
+- **Recent Executions** — trigger source, exit code, duration, status (OK / FAIL / Skipped (lock)), in local time.
+- **Configuration transfer** — protected import/export buttons for portable job sets.
 - **Service Logs (tail)** — live tail with follow & size selector.
 - **Job Builder** — the **“+ New job”** wizard creates jobs via the API with a cron preview (requires `Monitoring.AdminKey`).
 
@@ -414,6 +432,7 @@ RunCommandsService/
 ├─ Program.cs                  # Host setup (Windows Service, DI, logging)
 ├─ CommandExecutorService.cs   # Scheduler/executor core (cron, concurrency, timeout)
 ├─ Monitoring.cs               # HTTP dashboard + /api/* endpoints (incl. Job Builder)
+├─ ExecutionHistoryStore.cs    # SQLite history, retention, and per-job metrics
 ├─ SchedulerOptions.cs         # Scheduler configuration model
 ├─ TimeZoneHelper.cs           # IANA ↔ Windows time-zone resolution
 ├─ FileLogger.cs               # Rolling daily file logger
@@ -436,6 +455,7 @@ RunCommandsService/
 
 ## 📈 Changelog
 
+- **v2.11.0** — Persistent SQLite execution history with bounded retention and restart recovery; per-job retry, timeout, success/failure, and duration metrics in health/dashboard; admin-key-protected manual execution through normal concurrency/retry controls; validated atomic job import/export without secrets; main project compiles with zero warnings; 74 automated tests.
 - **v2.10.0** — Configurable per-job retries: total-attempt limits, bounded exponential backoff, symmetric jitter, exit-code allowlists, opt-in timeout/exception retries, cancellation-safe shutdown, concurrency-key reservation across a logical run, release of global capacity during backoff, final-result-only alert accounting, attempt metadata in health/API/dashboard, Job Builder controls, validation, and 70 automated tests.
 - **v2.9.2** — Configuration and HTTP hardening: validates scheduler ranges, HTTP prefixes, request limits, per-job limits, webhook URLs, and case-insensitive duplicate IDs; skips malformed/duplicate runtime entries safely; caps JSON bodies with explicit 400/413/415 responses; adds CSP and defensive headers; serializes Job Builder writes with durable atomic replacement and backup; adds version-sync and request-limit regression coverage (57 tests).
 - **v2.9.1** — Technical review hardening: migrated to .NET 10 with `global.json`; xUnit test suite (50 tests) with code coverage in CI; file logger with thread-safe size rotation, periodic cleanup (`LastWriteTimeUtc`), and `MinLevel` filtering; success determined by `ExitCode == 0` with opt-in `TreatStdErrAsFailure`; bounded stdout/stderr capture (`MaxOutputKB`); `SecretMasker` with constant-time auth comparison and default-secret rejection; `appsettings.example.json` template; corrected CLI paths in all docs with automated documentation validation tests.
@@ -454,11 +474,11 @@ RunCommandsService/
 
 Ideas on deck — contributions welcome (look for the [good first issues](../../issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)):
 
-- [ ] **Run history & trends** — persist executions to SQLite with simple trend charts on the dashboard
+- [x] **Run history & metrics** — persist executions to SQLite and expose per-job retry/duration statistics
 - [ ] **More notifiers** — native Telegram / Discord / Microsoft Teams alerts alongside email + webhook
 - [ ] **`/metrics` endpoint** — Prometheus-style metrics for scraping
 - [ ] **Dashboard auth** — optional login in front of the dashboard and write APIs
-- [ ] **Job import / export** — share job sets as portable JSON
+- [x] **Job import / export** — share job sets as portable JSON
 - [x] **Auto-generated architecture map** — via [CodeBoarding](https://github.com/CodeBoarding/CodeBoarding) (see the [component map](#️-component-map) above)
 
 Have an idea? [Open a feature request](../../issues/new?template=feature_request.md) or start a [discussion](../../discussions).

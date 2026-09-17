@@ -127,7 +127,7 @@ namespace RunCommandsService
             { "Africa/Casablanca", "Morocco Standard Time" },
         };
 
-        private static ILogger _logger;
+        private static ILogger? _logger;
 
         /// <summary>
         /// Initialize the helper with a logger for diagnostics
@@ -142,21 +142,21 @@ namespace RunCommandsService
         /// </summary>
         public class TimeZoneResult
         {
-            public TimeZoneInfo TimeZone { get; set; }
-            public string OriginalId { get; set; }
+            public TimeZoneInfo TimeZone { get; set; } = TimeZoneInfo.Utc;
+            public string OriginalId { get; set; } = string.Empty;
             public bool FellBackToUtc { get; set; }
             public bool WasIanaMapped { get; set; }
-            public string ResolvedId { get; set; }
+            public string ResolvedId { get; set; } = "UTC";
         }
 
         /// <summary>
         /// Find timezone with detailed result information
         /// </summary>
-        public static TimeZoneResult FindTimeZoneWithResult(string id)
+        public static TimeZoneResult FindTimeZoneWithResult(string? id)
         {
             var result = new TimeZoneResult
             {
-                OriginalId = id,
+                OriginalId = id ?? string.Empty,
                 FellBackToUtc = false,
                 WasIanaMapped = false
             };
@@ -214,7 +214,7 @@ namespace RunCommandsService
         /// <summary>
         /// Find timezone (backward compatible method)
         /// </summary>
-        public static TimeZoneInfo FindTimeZone(string id)
+        public static TimeZoneInfo FindTimeZone(string? id)
         {
             return FindTimeZoneWithResult(id).TimeZone;
         }
@@ -222,7 +222,7 @@ namespace RunCommandsService
         /// <summary>
         /// Validate if a timezone ID is valid
         /// </summary>
-        public static bool IsValidTimeZone(string id, out string error)
+        public static bool IsValidTimeZone(string? id, out string? error)
         {
             if (string.IsNullOrWhiteSpace(id))
             {
