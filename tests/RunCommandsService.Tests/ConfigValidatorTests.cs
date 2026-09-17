@@ -34,6 +34,28 @@ public class ConfigValidatorTests
     }
 
     [Fact]
+    public void Validate_RejectsInvalidRetryPolicy()
+    {
+        var job = ValidJob("retry-limits");
+        job.Retry = new RetryOptions
+        {
+            MaxAttempts = 11,
+            InitialDelaySeconds = -1,
+            BackoffMultiplier = 0.5,
+            MaxDelaySeconds = 90_000,
+            JitterPercent = 101
+        };
+
+        var result = ConfigValidator.Validate(new List<ScheduledCommand> { job }, "UTC").Jobs.Single();
+
+        Assert.Contains(result.Problems, p => p.Contains("Retry:MaxAttempts"));
+        Assert.Contains(result.Problems, p => p.Contains("Retry:InitialDelaySeconds"));
+        Assert.Contains(result.Problems, p => p.Contains("Retry:BackoffMultiplier"));
+        Assert.Contains(result.Problems, p => p.Contains("Retry:MaxDelaySeconds"));
+        Assert.Contains(result.Problems, p => p.Contains("Retry:JitterPercent"));
+    }
+
+    [Fact]
     public void Validate_RejectsInvalidSchedulerAndHttpRanges()
     {
         var values = new Dictionary<string, string?>

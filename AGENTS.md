@@ -3,7 +3,7 @@
 
 Operational guide for running, extending, and automating **Scheduled Command Executor** with an LLM from the command line.
 
-> Latest release: **v2.9.2** — strict configuration validation, bounded HTTP JSON bodies, defensive response headers, concurrency-safe durable config writes, and 57 automated tests.
+> Latest release: **v2.10.0** — opt-in per-job retries with bounded exponential backoff, jitter, failure filters, dashboard visibility, and 70 automated tests.
 
 > Target stack: **.NET 10.0**, Windows (service or console), `Cronos` for cron parsing, `HttpListener` for the dashboard/API.
 
@@ -160,6 +160,16 @@ sc.exe start "ScheduledCommandExecutor"
   "CaptureOutput": true,   // set false for “silent”
   "MaxOutputKB": 512,      // limit captured stdout/stderr size in KB (default 512KB)
   "TreatStdErrAsFailure": false, // set true if non-empty stderr should mark job as failed even if ExitCode == 0
+  "Retry": {
+    "MaxAttempts": 1,
+    "InitialDelaySeconds": 10,
+    "BackoffMultiplier": 2.0,
+    "MaxDelaySeconds": 300,
+    "JitterPercent": 20,
+    "RetryableExitCodes": [],
+    "RetryOnTimeout": false,
+    "RetryOnException": false
+  },
   "QuietStartLog": false,
   "CustomAlertMessage": null
 }
@@ -277,7 +287,25 @@ curl -H "Content-Type: application/json" -H "X-Admin-Key: CHANGE-ME" -d $body ht
 
 ---
 
-## 13) What's new v2.9.2 (for agents)
+## 13) What's new v2.10.0 (for agents)
+
+Core Engineer
+- Retries are opt-in through `ScheduledCommand.Retry`; `MaxAttempts=1` preserves prior behavior.
+- Backoff is exponential, capped, and jittered. Exit-code filters are supported; timeout and exception retries require explicit flags.
+- A `ConcurrencyKey` remains reserved across all attempts and delays, while `_parallelism` is acquired only for active process attempts.
+- Shutdown cancels process execution or backoff immediately and is never counted as a failed run.
+
+Monitoring / API
+- Only the final logical result updates history, consecutive-failure counters, and alerts.
+- Execution events expose `AttemptCount`, `MaxAttempts`, `RetryExhausted`, and `TimedOut`.
+- Health payloads and the single-file dashboard show retry configuration and attempts; Job Builder can create retry-enabled jobs.
+
+Testing
+- 70 xUnit tests cover retry selection, exit-code filters, timeout/exception flags, capped backoff, jitter, runtime normalization, configuration validation, and all prior behavior.
+
+---
+
+### Previous: What's new v2.9.2
 
 Core Engineer
 - `ConfigValidator` rejects invalid scheduler/job ranges and case-insensitive duplicate job IDs.

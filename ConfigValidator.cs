@@ -148,6 +148,8 @@ namespace RunCommandsService
                 if (c.MaxOutputKB <= 0 || c.MaxOutputKB > 102400)
                     jr.Problems.Add("MaxOutputKB must be between 1 and 102400");
 
+                ValidateRetryOptions(c.Retry, jr.Problems);
+
                 if (string.IsNullOrWhiteSpace(c.CronExpression))
                 {
                     jr.Problems.Add("missing CronExpression");
@@ -255,6 +257,29 @@ namespace RunCommandsService
 
             error = string.Empty;
             return true;
+        }
+
+        private static void ValidateRetryOptions(RetryOptions? retry, List<string> problems)
+        {
+            if (retry == null)
+            {
+                problems.Add("Retry must be a JSON object when specified");
+                return;
+            }
+
+            if (retry.MaxAttempts < 1 || retry.MaxAttempts > 10)
+                problems.Add("Retry:MaxAttempts must be between 1 and 10");
+            if (retry.InitialDelaySeconds < 0 || retry.InitialDelaySeconds > 3600)
+                problems.Add("Retry:InitialDelaySeconds must be between 0 and 3600");
+            if (retry.BackoffMultiplier < 1 || retry.BackoffMultiplier > 10 ||
+                double.IsNaN(retry.BackoffMultiplier) || double.IsInfinity(retry.BackoffMultiplier))
+                problems.Add("Retry:BackoffMultiplier must be between 1 and 10");
+            if (retry.MaxDelaySeconds < retry.InitialDelaySeconds || retry.MaxDelaySeconds > 86400)
+                problems.Add("Retry:MaxDelaySeconds must be at least InitialDelaySeconds and no greater than 86400");
+            if (retry.JitterPercent < 0 || retry.JitterPercent > 100)
+                problems.Add("Retry:JitterPercent must be between 0 and 100");
+            if (retry.RetryableExitCodes == null)
+                problems.Add("Retry:RetryableExitCodes must be an array when specified");
         }
 
         private static bool IsRemotelyExposedHttpPrefix(string prefix)

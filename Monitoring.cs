@@ -107,6 +107,7 @@ Ended:   ${EndUtc:o}
 ExitCode: ${ExitCode}
 Duration: ${DurationMs}ms
 Error:    ${Error}
+Attempts: ${AttemptCount}/${MaxAttempts}
 Message:  ${CustomMessage}";
     }
 
@@ -129,6 +130,14 @@ Message:  ${CustomMessage}";
         public string Error { get; set; }
 
         public int DurationMs { get; set; }
+
+        public int AttemptCount { get; set; } = 1;
+
+        public int MaxAttempts { get; set; } = 1;
+
+        public bool RetryExhausted { get; set; }
+
+        public bool TimedOut { get; set; }
     }
 
     public class ScheduledCommandView
@@ -148,6 +157,8 @@ Message:  ${CustomMessage}";
         public string ConcurrencyKey { get; set; } = string.Empty;
 
         public int? MaxRuntimeMinutes { get; set; }
+
+        public RetryOptions Retry { get; set; } = new();
 
         public string NextRunUtc { get; set; }
 
@@ -173,6 +184,8 @@ Message:  ${CustomMessage}";
         public string ConcurrencyKey { get; set; }
 
         public int? MaxRuntimeMinutes { get; set; }
+
+        public RetryOptions Retry { get; set; } = new();
 
         public string NextRunUtc { get; set; }
 
@@ -323,6 +336,8 @@ Message:  ${CustomMessage}";
                     .Replace("${EndUtc}", ev.EndUtc.ToString("o"))
                     .Replace("${ExitCode}", ev.ExitCode?.ToString() ?? "null")
                     .Replace("${DurationMs}", ev.DurationMs.ToString())
+                    .Replace("${AttemptCount}", ev.AttemptCount.ToString())
+                    .Replace("${MaxAttempts}", ev.MaxAttempts.ToString())
                     .Replace("${Error}", ev.Error ?? string.Empty)
                     .Replace("${CustomMessage}", schedule?.CustomAlertMessage ?? string.Empty);
 
@@ -377,6 +392,7 @@ Message:  ${CustomMessage}";
                         AllowParallelRuns = s.AllowParallelRuns,
                         ConcurrencyKey = s.ConcurrencyKey,
                         MaxRuntimeMinutes = s.MaxRuntimeMinutes,
+                        Retry = s.Retry,
                         NextRunUtc = s.NextRunUtc,
                         NextRunLocal = nextLocal,
                         CustomAlertMessage = s.CustomAlertMessage

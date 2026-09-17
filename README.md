@@ -6,9 +6,9 @@ A lightweight **.NET 10 Windows Service** that runs commands on cron schedules, 
 ![.NET](https://img.shields.io/badge/.NET-10.0-512BD4)
 ![Platform](https://img.shields.io/badge/platform-Windows-0078D6)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Version](https://img.shields.io/badge/version-2.9.2-blue)
+![Version](https://img.shields.io/badge/version-2.10.0-blue)
 
-> **v2.9.2 — Configuration and HTTP hardening:** strict ranges and duplicate-ID validation, bounded JSON requests, defensive response headers, and concurrency-safe durable configuration writes. See the [Changelog](#-changelog) for the full history.
+> **v2.10.0 — Configurable job retries:** bounded exponential backoff with jitter, exit-code filters, optional timeout/exception retries, and attempt visibility in the API and dashboard. See the [Changelog](#-changelog) for the full history.
 
 ---
 
@@ -33,6 +33,7 @@ This service lets administrators:
 - **Per-job time zones** — 80+ IANA IDs plus native Windows IDs, with DST‑correct next‑run calculation.
 - **Safe concurrency** — global `MaxParallelism` plus per‑job `ConcurrencyKey` locks to prevent overlap on shared resources.
 - **Runtime limits** — per‑job `MaxRuntimeMinutes` auto‑kills hung processes.
+- **Safe retries** — opt-in per-job attempts with bounded exponential backoff, jitter, and failure filters.
 - **Hot configuration reload** — edits to `appsettings.json` apply without a restart; a bad edit keeps the previous valid config.
 - **Live dashboard** — KPIs, scheduled jobs, recent executions, and a tail of the service logs, all in local time.
 - **Job Builder UI** — create/edit/delete jobs from the dashboard with a cron preview (admin‑key protected).
@@ -222,6 +223,16 @@ Configuration lives in `appsettings.json`. A minimal example:
       "AllowParallelRuns": false,
       "ConcurrencyKey": "reports",
       "MaxRuntimeMinutes": 20,
+      "Retry": {
+        "MaxAttempts": 3,
+        "InitialDelaySeconds": 10,
+        "BackoffMultiplier": 2.0,
+        "MaxDelaySeconds": 300,
+        "JitterPercent": 20,
+        "RetryableExitCodes": [ 1, 2 ],
+        "RetryOnTimeout": false,
+        "RetryOnException": false
+      },
       "AlertOnFail": true,
       "CaptureOutput": true,
       "QuietStartLog": false,
@@ -243,12 +254,30 @@ Configuration lives in `appsettings.json`. A minimal example:
 | `AllowParallelRuns` | bool | If `false`, jobs sharing a `ConcurrencyKey` won't overlap. |
 | `ConcurrencyKey` | string | Grouping key for mutual exclusion. Defaults to `Id` if empty. |
 | `MaxRuntimeMinutes` | int? | Cancels and kills the process after this duration. |
+| `Retry` | object | Opt-in retry policy. `MaxAttempts=1` disables retries (default). |
 | `AlertOnFail` | bool | Send alerts on failure (via `Monitoring.Notifiers`). |
 | `CaptureOutput` | bool | If `true`, stdout/stderr are captured and logged. |
 | `MaxOutputKB` | int | Limit captured stdout/stderr buffer size in KB (default `512`). |
 | `TreatStdErrAsFailure` | bool | If `true`, non-empty `stderr` marks the execution as failed even if `ExitCode == 0`. Default is `false` (success is determined by `ExitCode == 0`). |
 | `QuietStartLog` | bool | Suppresses the "Executing…" start log — useful for very frequent jobs. |
 | `CustomAlertMessage` | string | Extra context inserted into email/webhook templates. |
+
+### Retry policy
+
+Retries are disabled unless `Retry.MaxAttempts` is greater than `1`. The concurrency key remains reserved for the whole logical run, while the global parallelism slot is released during backoff. This prevents overlapping occurrences without wasting execution capacity.
+
+| Option | Range/default | Description |
+| --- | --- | --- |
+| `MaxAttempts` | `1..10`, default `1` | Total attempts including the initial execution. |
+| `InitialDelaySeconds` | `0..3600`, default `10` | Delay before the first retry. |
+| `BackoffMultiplier` | `1..10`, default `2.0` | Exponential multiplier after each failure. |
+| `MaxDelaySeconds` | up to `86400`, default `300` | Hard cap applied after jitter. Must be at least the initial delay. |
+| `JitterPercent` | `0..100`, default `20` | Symmetric random variation that avoids synchronized retry storms. |
+| `RetryableExitCodes` | default `[]` | Eligible exit codes. Empty means every unsuccessful exit-code result. Include `0` to retry a `TreatStdErrAsFailure` result. |
+| `RetryOnTimeout` | default `false` | Retry after the per-attempt runtime limit kills the process tree. |
+| `RetryOnException` | default `false` | Retry process-start or execution infrastructure exceptions. |
+
+Only enable retries for commands known to be idempotent, or whose duplicate effects are otherwise controlled.
 
 ### Scheduler & monitoring options
 
@@ -407,6 +436,7 @@ RunCommandsService/
 
 ## 📈 Changelog
 
+- **v2.10.0** — Configurable per-job retries: total-attempt limits, bounded exponential backoff, symmetric jitter, exit-code allowlists, opt-in timeout/exception retries, cancellation-safe shutdown, concurrency-key reservation across a logical run, release of global capacity during backoff, final-result-only alert accounting, attempt metadata in health/API/dashboard, Job Builder controls, validation, and 70 automated tests.
 - **v2.9.2** — Configuration and HTTP hardening: validates scheduler ranges, HTTP prefixes, request limits, per-job limits, webhook URLs, and case-insensitive duplicate IDs; skips malformed/duplicate runtime entries safely; caps JSON bodies with explicit 400/413/415 responses; adds CSP and defensive headers; serializes Job Builder writes with durable atomic replacement and backup; adds version-sync and request-limit regression coverage (57 tests).
 - **v2.9.1** — Technical review hardening: migrated to .NET 10 with `global.json`; xUnit test suite (50 tests) with code coverage in CI; file logger with thread-safe size rotation, periodic cleanup (`LastWriteTimeUtc`), and `MinLevel` filtering; success determined by `ExitCode == 0` with opt-in `TreatStdErrAsFailure`; bounded stdout/stderr capture (`MaxOutputKB`); `SecretMasker` with constant-time auth comparison and default-secret rejection; `appsettings.example.json` template; corrected CLI paths in all docs with automated documentation validation tests.
 - **v2.9** — Production resilience: 80+ timezone mappings with explicit fallback warnings, startup validation report, scheduler heartbeat on `/api/health`, exponential backoff (10s→20s→40s→60s) with critical alerts after 3+ failures, protected hot‑reload, richer error context.

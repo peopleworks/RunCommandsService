@@ -427,6 +427,7 @@
                                 <col style="width:12%">
                                 <col style="width:8%">
                                 <col style="width:10%">
+                                <col style="width:10%">
                                 <col style="width:16%">
                                 <col style="width:8%">
                             </colgroup>
@@ -438,6 +439,7 @@
                                     <th>Key</th>
                                     <th>Parallel</th>
                                     <th>Max (min)</th>
+                                    <th>Attempts</th>
                                     <th>Next run</th>
                                     <th>Enabled</th>
                                 </tr>
@@ -457,12 +459,13 @@
                                 <col style="width:28%">
                                 <col style="width:22%">
                                 <col style="width:8%">
+                                <col style="width:10%">
                                 <col style="width:12%">
                                 <col style="width:12%">
                                 <col style="width:18%">
                             </colgroup>
                             <thead>
-                                <tr><th>When (Local)</th><th>Id</th><th>Exit</th><th>Duration</th><th>Status</th><th>Error</th></tr>
+                                <tr><th>When (Local)</th><th>Id</th><th>Exit</th><th>Attempts</th><th>Duration</th><th>Status</th><th>Error</th></tr>
                             </thead>
                             <tbody></tbody>
                         </table>
@@ -519,6 +522,19 @@
                     <label>Custom alert message</label>
                     <input id="j_msg" placeholder="Human hint to include in alert emails">
                 </div>
+                <details style="grid-column:1 / -1">
+                    <summary>Retry policy (advanced)</summary>
+                    <div class="grid2" style="margin-top:12px">
+                        <div class="field"><label>Max attempts (1 disables retries)</label><input id="j_retry_max" type="number" min="1" max="10" value="1"></div>
+                        <div class="field"><label>Initial delay (seconds)</label><input id="j_retry_initial" type="number" min="0" max="3600" value="10"></div>
+                        <div class="field"><label>Backoff multiplier</label><input id="j_retry_multiplier" type="number" min="1" max="10" step="0.1" value="2"></div>
+                        <div class="field"><label>Maximum delay (seconds)</label><input id="j_retry_maxdelay" type="number" min="0" max="86400" value="300"></div>
+                        <div class="field"><label>Jitter (%)</label><input id="j_retry_jitter" type="number" min="0" max="100" value="20"></div>
+                        <div class="field"><label>Retryable exit codes</label><input id="j_retry_codes" class="mono" placeholder="empty = all; e.g. 1,2,7"></div>
+                        <div class="field"><label><input type="checkbox" id="j_retry_timeout"> Retry after timeout</label></div>
+                        <div class="field"><label><input type="checkbox" id="j_retry_exception"> Retry after start/runtime exception</label></div>
+                    </div>
+                </details>
                 <div class="field" style="grid-column:1 / -1">
                     <label>Cron expression</label>
                     <div class="grid1">
@@ -615,6 +631,8 @@
                                (p(j,'cronExpression','CronExpression')||'').toLowerCase().includes(q))
             .forEach(j => {
               const tr = document.createElement('tr');
+              const retry = p(j,'retry','Retry') || {};
+              const maxAttempts = Number(p(retry,'maxAttempts','MaxAttempts')) || 1;
               const nextUtc = p(j,'nextRunUtc','NextRunUtc');
               const nextDisplay = formatLocal(nextUtc) || (nextUtc || '');
               const tip = nextUtc ? ` title="${nextUtc}"` : '';
@@ -624,6 +642,7 @@
                 <td class="mono" title="${p(j,'concurrencyKey','ConcurrencyKey')||''}">${p(j,'concurrencyKey','ConcurrencyKey')||''}</td>
                 <td>${p(j,'allowParallelRuns','AllowParallelRuns')?'Yes':'No'}</td>
                 <td>${p(j,'maxRuntimeMinutes','MaxRuntimeMinutes')??''}</td>
+                <td>${maxAttempts > 1 ? maxAttempts : 'Off'}</td>
                 <td class="mono wrap"${tip}>${nextDisplay}</td>
                 <td>${p(j,'enabled','Enabled')?'<span class="chip">ON</span>':'<span class="chip">OFF</span>'}</td>`;
               jb.appendChild(tr);
@@ -636,11 +655,15 @@
               const endDisplay = formatLocal(endUtc) || (endUtc || '');
               const ok = !!p(ev,'success','Success');
               const sk = !!p(ev,'skippedDueToConflict','SkippedDueToConflict');
-              const stat = sk?'<span class="warn">Skipped (lock)</span>':(ok?'<span class="ok">OK</span>':'<span class="err">FAIL</span>');
+              const exhausted = !!p(ev,'retryExhausted','RetryExhausted');
+              const stat = sk?'<span class="warn">Skipped (lock)</span>':(ok?'<span class="ok">OK</span>':`<span class="err">${exhausted?'FAIL (retries exhausted)':'FAIL'}</span>`);
+              const attemptCount = Number(p(ev,'attemptCount','AttemptCount')) || 1;
+              const maxAttempts = Number(p(ev,'maxAttempts','MaxAttempts')) || 1;
               const tr=document.createElement('tr');
               tr.innerHTML = `<td class="mono wrap" title="${endUtc || ''}">${endDisplay}</td>
                 <td class="mono" title="${p(ev,'commandId','CommandId')||''}">${p(ev,'commandId','CommandId')||''}</td>
                 <td>${p(ev,'exitCode','ExitCode')??''}</td>
+                <td>${attemptCount}/${maxAttempts}</td>
                 <td>${fmtMs(p(ev,'durationMs','DurationMs'))}</td>
                 <td>${stat}</td>
                 <td class="mono" title="${(p(ev,'error','Error')||'').replaceAll('"','&quot;')}">${(p(ev,'error','Error')||'').slice(0,300)}</td>`;
@@ -701,7 +724,17 @@
         AlertOnFail: document.getElementById('j_alert').checked,
         CaptureOutput: document.getElementById('j_cap').checked,
         QuietStartLog: document.getElementById('j_quiet').checked,
-        CustomAlertMessage: document.getElementById('j_msg').value || null
+        CustomAlertMessage: document.getElementById('j_msg').value || null,
+        Retry: {
+          MaxAttempts: parseInt(document.getElementById('j_retry_max').value||"1"),
+          InitialDelaySeconds: parseInt(document.getElementById('j_retry_initial').value||"10"),
+          BackoffMultiplier: parseFloat(document.getElementById('j_retry_multiplier').value||"2"),
+          MaxDelaySeconds: parseInt(document.getElementById('j_retry_maxdelay').value||"300"),
+          JitterPercent: parseInt(document.getElementById('j_retry_jitter').value||"20"),
+          RetryableExitCodes: document.getElementById('j_retry_codes').value.split(',').map(v=>v.trim()).filter(Boolean).map(Number).filter(Number.isInteger),
+          RetryOnTimeout: document.getElementById('j_retry_timeout').checked,
+          RetryOnException: document.getElementById('j_retry_exception').checked
+        }
       };
       if(!job.Id || !job.Command || !job.CronExpression){ alert('Id, Command, Cron are required'); return; }
 
